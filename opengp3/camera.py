@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import queue
+import sys
 import struct
 import threading
 import time
@@ -87,9 +88,17 @@ FRAMERATES = {0: 1.875, 1: 3.75, 2: 7.5, 3: 15, 4: 30, 5: 60, 6: 120, 7: 240}
 
 
 def _libusb_backend():
-    """Locate libusb-1.0 (Homebrew/MacPorts paths aren't on the default
-    dyld search path for python.org / venv interpreters)."""
+    """Locate libusb-1.0: the copy bundled with the ``libusb-package`` wheel
+    (Windows, macOS, Linux), else a system install (Homebrew/MacPorts paths
+    aren't on the default dyld search path of python.org / venv interpreters)."""
     import usb.backend.libusb1 as lb
+    try:
+        import libusb_package
+        be = libusb_package.get_libusb1_backend()
+        if be is not None:
+            return be
+    except Exception:
+        pass
     be = lb.get_backend()
     if be is not None:
         return be
@@ -99,7 +108,21 @@ def _libusb_backend():
             be = lb.get_backend(find_library=lambda _, p=p: p)
             if be is not None:
                 return be
-    raise LibUSBNotFoundError("libusb-1.0 not found - install it with: brew install libusb")
+    raise LibUSBNotFoundError("libusb-1.0 not found - pip install libusb-package "
+                              "(or install libusb with your package manager)")
+
+
+def _access_help() -> str:
+    """OS-specific hint when the device exists but cannot be opened."""
+    if sys.platform.startswith("linux"):
+        return ("on Linux, allow non-root access with a udev rule: run "
+                "'opengp3 udev' for instructions")
+    if sys.platform == "win32":
+        return ("on Windows, libusb needs the WinUSB driver on the GP3 camera: install it with "
+                "Zadig (https://zadig.akeo.ie, device 'USB 2.0 Digital Imaging Camera', "
+                "1E10 2001). Note: Gazepoint Control then cannot use the camera until its "
+                "driver is restored")
+    return "close other programs using the GP3"
 
 
 def _bit(value: int, n: int) -> bool:
@@ -139,16 +162,31 @@ class GP3Camera:
             raise GP3NotFoundError("GP3 / Firefly MV not found on USB (VID 0x1e10). "
                                    "Is it plugged in, and not in use by another program?")
         cam = cls(dev)
+        if sys.platform.startswith("linux"):
+            try:  # vendor-specific device: normally no kernel driver, but be safe
+                if dev.is_kernel_driver_active(0):
+                    dev.detach_kernel_driver(0)
+            except (usb.core.USBError, NotImplementedError):
+                pass
         try:
-            dev.set_configuration(1)
+            if dev.get_active_configuration() is None:
+                dev.set_configuration(1)
         except usb.core.USBError as e:
-            # already configured / busy is fine; anything else is fatal
-            if e.errno == 19:
-                raise GP3NotFoundError(
-                    "GP3 disappeared or is held by another process "
-                    "(close other OpenGP3 programs)") from e
-            if e.errno not in (16, None):
-                raise
+            if e.errno == 13:  # EACCES
+                raise GP3Error(f"no permission to open the GP3: {_access_help()}") from e
+            try:
+                dev.set_configuration(1)
+            except usb.core.USBError as e2:
+                if e2.errno == 19:
+                    raise GP3NotFoundError(
+                        "GP3 disappeared or is held by another process "
+                        "(close other OpenGP3 programs)") from e2
+                if e2.errno == 13:
+                    raise GP3Error(f"no permission to open the GP3: {_access_help()}") from e2
+                if e2.errno not in (16, None):
+                    raise GP3Error(f"cannot open the GP3 ({e2}): {_access_help()}") from e2
+        except NotImplementedError as e:  # Windows without WinUSB driver
+            raise GP3Error(f"cannot access the GP3: {_access_help()}") from e
         cam._parse_config_rom()
         return cam
 

@@ -108,3 +108,14 @@ def test_evaluate_accuracy_in_degrees():
     assert 0.35 < res.accuracy_deg < 0.6
     assert res.precision_rms_s2s_deg > 0
     assert "ACCURACY" in res.report()
+
+
+def test_eye_with_only_four_points_still_calibrated():
+    rng = np.random.default_rng(5)
+    from opengp3.calibration import API_DEFAULT_POINTS
+    drop = {(1, "L")}                              # left eye lost at one of 5 points
+    cal = Calibration.fit(make_samples(API_DEFAULT_POINTS, SCREEN.rect, rng, drop=drop), SCREEN)
+    assert cal.eyes["L"].n_points == 4 and cal.eyes["L"].mapping.model == "affine"
+    assert cal.eyes["R"].n_points == 5
+    p = cal.points[1]
+    assert p.valid["R"] and not p.valid["L"]

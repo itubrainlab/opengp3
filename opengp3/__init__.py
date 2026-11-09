@@ -1,5 +1,5 @@
-"""OpenGP3: a macOS (user-space, libusb) driver and gaze tracker for the
-Gazepoint GP3 eye tracker.
+"""OpenGP3: a cross-platform (macOS, Linux, Windows) user-space driver, gaze
+tracker and Open Gaze API server for the Gazepoint GP3 eye tracker.
 
 High level::
 
@@ -17,6 +17,8 @@ High level::
 Low level: ``GP3Camera`` (registers, frames, IR LEDs), ``detect_eyes`` and
 ``EyeTracker`` (pupil/glint features per frame).
 """
+__version__ = "0.2.0"  # defined first: submodules import it
+
 from .calibration import (VALIDATION_POINTS, Calibration, CalibrationError, Mapping,
                           ValidationResult, grid_points)
 from .camera import GP3Camera, GP3Error, GP3NotFoundError, LibUSBNotFoundError
@@ -24,13 +26,17 @@ from .detection import EyeFeature, EyeTracker, detect_eyes
 from .display import Cancelled, StimulusWindow
 from .filters import OneEuroFilter
 from .screen import Rect, Screen
-from .tracker import GazeSample, GazeTracker
+from .events import BlinkDetector, BlinkInfo, Fixation, FixationFilter, MovingAverage
+from .eyemodel import EyeMetrics, EyeModel, MarkerTracker
+from .server import OpenGazeClient, OpenGazeServer
+from .tracker import CalibrationRun, GazeSample, GazeTracker
 
-__version__ = "0.1.0"
 
 __all__ = [
     "GazeTracker", "GazeSample", "Screen", "Rect", "Calibration", "CalibrationError",
     "ValidationResult", "Mapping", "grid_points", "VALIDATION_POINTS", "OneEuroFilter",
     "GP3Camera", "GP3Error", "GP3NotFoundError", "LibUSBNotFoundError",
     "EyeFeature", "EyeTracker", "detect_eyes", "StimulusWindow", "Cancelled",
+    "OpenGazeServer", "OpenGazeClient", "CalibrationRun", "FixationFilter", "Fixation",
+    "BlinkDetector", "BlinkInfo", "MovingAverage", "EyeModel", "EyeMetrics", "MarkerTracker",
 ]

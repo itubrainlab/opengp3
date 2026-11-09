@@ -8,6 +8,9 @@
     opengp3 validate --calibration cal.json
     opengp3 track --calibration cal.json [--csv gaze.csv] [--show]
     opengp3 accuracy [--points 9] [--area-diag-in 22] [--plot result.png]
+    opengp3 server [--port 4242] [--host 0.0.0.0]  Open Gaze API server + control window
+    opengp3 marker marker.png [--mm 11]            printable marker for pupil size in mm
+    opengp3 udev                                   Linux: USB permission rule
 
 Screen options (all gaze commands): --screen-width-cm (needed for degrees),
 --distance-cm (default 65).
@@ -51,54 +54,53 @@ def cmd_info(a):
 
 
 def cmd_view(a):
-    with GP3Camera.open() as cam:
-        _configure(cam, a)
-        t0, n, fps = time.time(), 0, 0.0
+    """Live camera view. Eye detection runs on every camera frame in the
+    tracker's background thread; this loop only draws the newest frame, so
+    slow drawing never costs tracking frames."""
+    from .control import render_tracker_view
+    gt = GazeTracker(Screen(1, 1), smoothing=False, input_monitor=False,
+                     full_sensor=not a.crop)
+    with gt:
+        cam = gt.camera
+        if a.shutter is not None:
+            cam.set_feature("shutter", a.shutter)
+        if a.gain is not None:
+            cam.set_feature("gain", a.gain)
+        if a.no_leds:
+            cam.set_leds(False)
         win = "GP3 (q / Esc / close to quit)"
-        tracker = EyeTracker()
+        last_frame, shown, t0, disp_fps = -1, 0, time.time(), 0.0
+        seq0, t_cam = None, time.time()
         try:
             while True:
-                _, _, img = cam.grab(latest=True)
-                n += 1
-                if time.time() - t0 >= 1:
-                    fps, n, t0 = n / (time.time() - t0), 0, time.time()
-                vis = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-                eyes = tracker.update(detect_eyes(img))
-                for side, e in eyes.items():
-                    cv2.circle(vis, (int(e.pupil_x), int(e.pupil_y)), int(e.pupil_r) + 1,
-                               (0, 255, 0), 1)
-                    cv2.drawMarker(vis, (int(e.glint_x), int(e.glint_y)), (0, 0, 255),
-                                   cv2.MARKER_CROSS, 8)
-                    cv2.putText(vis, side, (int(e.pupil_x) - 5, int(e.pupil_y) - int(e.pupil_r) - 8),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                h, w = img.shape
-                if len(eyes) == 2:
-                    status, col = "both eyes", (0, 255, 0)
-                elif eyes:
-                    status, col = f"only {'right' if 'R' in eyes else 'left'} eye", (0, 200, 255)
-                else:
-                    status, col = "no eyes", (0, 0, 255)
-                if eyes:
-                    xs = [e.pupil_x for e in eyes.values()]
-                    ys = [e.pupil_y for e in eyes.values()]
-                    m, hint = 0.08, []
-                    if min(xs) < m * w: hint.append("move head toward image right")
-                    if max(xs) > (1 - m) * w: hint.append("move head toward image left")
-                    if min(ys) < m * h: hint.append("lower head / tilt GP3 up")
-                    if max(ys) > (1 - m) * h: hint.append("raise head / tilt GP3 down")
-                    if hint:
-                        status += " - " + ", ".join(hint)
-                cv2.putText(vis, f"{fps:.1f} fps  {status}", (8, 20), cv2.FONT_HERSHEY_SIMPLEX,
-                            0.55, col, 1)
-                cv2.imshow(win, vis)
+                img, s = gt.latest_frame()
+                if img is not None and s is not None and s.frame != last_frame:
+                    last_frame = s.frame
+                    shown += 1
+                    now = time.time()
+                    if now - t0 >= 1:
+                        disp_fps, shown, t0 = shown / (now - t0), 0, now
+                    if seq0 is None:
+                        seq0, t_cam = s.frame, now
+                    cam_fps = (s.frame - seq0) / max(1e-6, now - t_cam)
+                    if now - t_cam > 2:  # sliding estimate
+                        seq0, t_cam = s.frame, now
+                    vis = render_tracker_view(img, s, gt.fps, [
+                        f"camera {cam_fps:.1f} fps   tracking {gt.fps:.1f} fps   "
+                        f"display {disp_fps:.1f} fps   dropped {gt.dropped_frames}"])
+                    cv2.imshow(win, vis)
                 if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
                     break
-                if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
+                try:
+                    if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1 and last_frame >= 0:
+                        break
+                except cv2.error:
                     break
         except KeyboardInterrupt:
             pass
         finally:
             cv2.destroyAllWindows()
+            cv2.waitKey(1)
 
 
 def cmd_snapshot(a):
@@ -136,11 +138,27 @@ def cmd_record(a):
 
 # ------------------------------------------------------------------ gaze
 def _screen(a) -> Screen:
-    return Screen.detect(width_cm=a.screen_width_cm, distance_cm=a.distance_cm)
+    return Screen.detect(width_cm=a.screen_width_cm, distance_cm=a.distance_cm,
+                         display=getattr(a, "display", 0))
 
 
 def _area(a, screen: Screen):
+    """Explicit --area-diag-in, else None (tracker default: whole screen up to
+    22", centred 22" area on larger screens, unless --full-screen)."""
     return screen.area(a.area_diag_in, _aspect(a.area_aspect)) if a.area_diag_in else None
+
+
+def _max_diag(a):
+    return None if getattr(a, "full_screen", False) else 22.0
+
+
+def _report_area(gt: GazeTracker, area=None):
+    r = area or gt.default_area()
+    sc = gt.screen
+    if (r.w, r.h) != (sc.width, sc.height):
+        print(f"calibrating a centred {r.w:.0f}x{r.h:.0f} area of the {sc.width}x{sc.height} screen "
+              f"(screen is {sc.diagonal_in:.0f}\"; the GP3 is specified up to 22\"; "
+              "--full-screen to override)", flush=True)
 
 
 def _aspect(s: str) -> float:
@@ -190,7 +208,8 @@ def dump_samples(gt: GazeTracker, path: str):
 
 def cmd_calibrate(a):
     screen = _screen(a)
-    with GazeTracker(screen) as gt:
+    with GazeTracker(screen, max_diagonal_in=_max_diag(a)) as gt:
+        _report_area(gt, _area(a, screen))
         try:
             cal = gt.calibrate(points=a.points, area=_area(a, screen))
             print(cal.summary())
@@ -226,6 +245,7 @@ def cmd_track(a):
     cal = Calibration.load(a.calibration)
     screen = _screen(a)
     with GazeTracker(screen, calibration=cal, smoothing=not a.raw) as gt:
+        gt.gaze_pointer = a.pointer
         if a.show:
             if a.csv:
                 _record_gaze_bg(gt, a)
@@ -285,6 +305,55 @@ def cmd_accuracy(a):
     cmd_calibrate(a)
 
 
+def cmd_server(a):
+    from .control import ControlApp, default_calibration_path
+    from .server import OpenGazeServer
+    screen = _screen(a)
+    path = default_calibration_path()
+    cal = None
+    src = a.calibration or (str(path) if path.exists() else None)
+    if src:
+        try:
+            cal = Calibration.load(src)
+            print(f"loaded calibration {src}", flush=True)
+        except Exception as e:
+            print(f"could not load calibration {src}: {e}")
+    gt = GazeTracker(screen, calibration=cal, monocular=a.monocular, auto_gain=a.auto_gain,
+                     aac_length=a.aac_filter, max_diagonal_in=_max_diag(a))
+    with gt:
+        _report_area(gt)
+        srv = OpenGazeServer(gt, a.host, a.port).start()
+        print(f"Open Gaze API server listening on {a.host}:{srv.port}  "
+              f"(screen {screen.width}x{screen.height}"
+              + (f", {screen.width_cm:.1f} cm" if screen.width_cm else "") + ")", flush=True)
+        try:
+            ControlApp(gt, srv, show_tracker=not a.no_display, media_dir=a.media).loop()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            srv.stop()
+
+
+def cmd_marker(a):
+    from .eyemodel import MarkerTracker
+    img = MarkerTracker.image(a.mm, a.dpi)
+    cv2.imwrite(a.output, img)
+    print(f"{a.output}: ArUco 4x4 id 0, black square {a.mm} mm at {a.dpi} dpi "
+          f"({img.shape[1]}x{img.shape[0]} px incl. white border). Print at 100% scale, measure "
+          "the black square and use that size (laser printers: inkjet ink can be invisible in IR).")
+
+
+UDEV_RULE = ('SUBSYSTEM=="usb", ATTR{idVendor}=="1e10", ATTR{idProduct}=="2001", '
+             'MODE="0660", TAG+="uaccess"')
+
+
+def cmd_udev(a):
+    print("Allow non-root access to the GP3 camera on Linux:\n")
+    print(f"  echo '{UDEV_RULE}' | sudo tee /etc/udev/rules.d/60-opengp3.rules")
+    print("  sudo udevadm control --reload-rules && sudo udevadm trigger")
+    print("\nthen unplug and replug the GP3.")
+
+
 # ------------------------------------------------------------------ main
 def main(argv=None):
     p = argparse.ArgumentParser(prog="opengp3", description="Gazepoint GP3 driver and gaze tracker")
@@ -299,11 +368,15 @@ def main(argv=None):
         s.add_argument("--no-leds", action="store_true", help="leave the IR illuminators off")
 
     def screen_opts(s):
-        s.add_argument("--screen-width-cm", type=float, help="physical screen width (for degrees)")
+        s.add_argument("--screen-width-cm", type=float,
+                       help="physical screen width (default: as reported by the OS)")
         s.add_argument("--distance-cm", type=float, default=65.0, help="eye-screen distance")
+        s.add_argument("--display", type=int, default=0, help="display index (0 = main)")
 
     def area_opts(s):
         s.add_argument("--points", type=int, default=9, choices=[5, 9, 13, 16, 25])
+        s.add_argument("--full-screen", action="store_true",
+                       help="use the whole screen even if it is larger than 22\" (beyond the GP3 spec)")
         s.add_argument("--area-diag-in", type=float, default=0,
                        help="calibrate a centred area of this monitor diagonal (inches) "
                             "instead of the full screen; needs --screen-width-cm")
@@ -336,6 +409,7 @@ def main(argv=None):
     s.add_argument("--duration", type=float, default=0, help="seconds (0 = until Ctrl-C / Esc)")
     s.add_argument("--show", action="store_true", help="fullscreen gaze cursor")
     s.add_argument("--raw", action="store_true", help="disable smoothing")
+    s.add_argument("--pointer", action="store_true", help="move the mouse cursor with your gaze")
     s.set_defaults(fn=cmd_track)
 
     s = sub.add_parser("accuracy", help="calibrate + validate + report")
@@ -346,9 +420,30 @@ def main(argv=None):
     s.add_argument("--dump")
     s.set_defaults(fn=cmd_accuracy)
 
+    s = sub.add_parser("server", help="Open Gaze API server with tracker display and calibration")
+    screen_opts(s)
+    s.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to accept remote clients")
+    s.add_argument("--port", type=int, default=4242)
+    s.add_argument("--calibration", help="calibration to load (default: the last one)")
+    s.add_argument("--no-display", action="store_true", help="start without the tracker window")
+    s.add_argument("--monocular", choices=["R", "L"], help="track only this eye")
+    s.add_argument("--auto-gain", action="store_true", help="gain sweep when no eyes are found")
+    s.add_argument("--aac-filter", type=int, default=15, help="AAC moving-average length")
+    s.add_argument("--media", help="folder with CalibPoint<N>.png/.mp3 calibration targets")
+    s.add_argument("--full-screen", action="store_true",
+                   help="calibrate on the whole screen even if it is larger than 22\"")
+    s.set_defaults(fn=cmd_server)
+
+    s = sub.add_parser("marker", help="printable marker for real-world pupil size")
+    s.add_argument("output")
+    s.add_argument("--mm", type=float, default=11.0)
+    s.add_argument("--dpi", type=int, default=600)
+    s.set_defaults(fn=cmd_marker)
+
+    sub.add_parser("udev", help="Linux USB permission rule").set_defaults(fn=cmd_udev)
+
     a = p.parse_args(argv)
-    if getattr(a, "area_diag_in", 0) and not a.screen_width_cm:
-        p.error("--area-diag-in needs --screen-width-cm")
+
     try:
         a.fn(a)
     except Cancelled:

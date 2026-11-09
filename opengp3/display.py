@@ -24,6 +24,8 @@ class StimulusWindow:
         self.s = min(1.0, max_canvas_width / screen.width)
         self.title = title
         cv2.namedWindow(title, cv2.WINDOW_NORMAL)
+        if screen.x or screen.y:  # place on the selected display before going fullscreen
+            cv2.moveWindow(title, int(screen.x) + 50, int(screen.y) + 50)
         cv2.setWindowProperty(title, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
         self.canvas = None
         self.clear()
@@ -47,7 +49,10 @@ class StimulusWindow:
             self.clear()
             self.show()
             x, y, w, h = cv2.getWindowImageRect(self.title)
-            ok = (x, y) == (0, 0) and abs(w - want[0]) <= 2 and abs(h - want[1]) <= 2
+            sw, sh = self.screen.width, self.screen.height
+            ok = (((x, y) == (0, 0) and abs(w - want[0]) <= 2 and abs(h - want[1]) <= 2)
+                  or (abs(w - sw) <= 2 and abs(h - sh) <= 2 and
+                      (x, y) in ((0, 0), (int(self.screen.x), int(self.screen.y)))))
             if ok:
                 stable_since = stable_since or time.time()
                 if time.time() - stable_since > 0.3:
@@ -60,9 +65,17 @@ class StimulusWindow:
                     cv2.waitKey(50)
                     cv2.setWindowProperty(self.title, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
                     t_retry = time.time() + 0.8
+        # Window-rect semantics differ between OpenCV GUI backends (Cocoa reports
+        # canvas units at (0, 0); Win32/GTK/Qt report screen pixels at the
+        # monitor origin). Accept a full-screen rect in either form, else fail.
+        sw, sh = self.screen.width, self.screen.height
+        if abs(w * want[1] - h * want[0]) <= 0.02 * want[0] * h and (
+                abs(w - sw) <= 0.02 * sw or abs(w - want[0]) <= 2 or w >= sw):
+            self.geometry = (x, y, w, h)
+            return
         raise RuntimeError(
             f"stimulus window did not become fullscreen (image rect {x, y, w, h}, expected "
-            f"(0, 0, {want[0]}, {want[1]})); targets would be misplaced")
+            f"the full {sw}x{sh} screen); targets would be misplaced")
 
     # ------------------------------------------------------------- drawing
     def _p(self, x, y):
@@ -82,6 +95,28 @@ class StimulusWindow:
         """Fixation target that shrinks as ``progress`` goes 0 -> 1."""
         self.dot(x, y, 26 - 16 * min(1.0, max(0.0, progress)))
         self.dot(x, y, 4, (0, 0, 255))
+
+    def image(self, img: np.ndarray, x, y, size: float):
+        """Draw a BGR/BGRA image centred at (x, y), ``size`` points wide."""
+        px = max(2, int(size * self.s))
+        im = cv2.resize(img, (px, px), interpolation=cv2.INTER_AREA)
+        cx, cy = self._p(x, y)
+        x0, y0 = cx - px // 2, cy - px // 2
+        H, W = self.canvas.shape[:2]
+        sx0, sy0 = max(0, -x0), max(0, -y0)
+        x0c, y0c = max(0, x0), max(0, y0)
+        x1c, y1c = min(W, x0 + px), min(H, y0 + px)
+        if x1c <= x0c or y1c <= y0c:
+            return
+        crop = im[sy0:sy0 + (y1c - y0c), sx0:sx0 + (x1c - x0c)]
+        if crop.ndim == 3 and crop.shape[2] == 4:  # alpha blend
+            a = crop[:, :, 3:4] / 255.0
+            roi = self.canvas[y0c:y1c, x0c:x1c]
+            roi[:] = (a * crop[:, :, :3] + (1 - a) * roi).astype(np.uint8)
+        else:
+            if crop.ndim == 2:
+                crop = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
+            self.canvas[y0c:y1c, x0c:x1c] = crop[:, :, :3]
 
     def rect(self, r: Rect, color=(50, 50, 50)):
         cv2.rectangle(self.canvas, self._p(r.x, r.y), self._p(r.x + r.w, r.y + r.h), color, 1)

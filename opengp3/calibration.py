@@ -45,6 +45,13 @@ def grid_points(n: int = 9, margin: float = 0.1) -> list[tuple[float, float]]:
     return [(float(x), float(y)) for x, y in pts]
 
 
+# Open Gaze API default calibration: 5 points, in this presentation order,
+# with these per-point timings (as documented for Gazepoint Control).
+API_DEFAULT_POINTS = [(0.5, 0.5), (0.85, 0.15), (0.85, 0.85), (0.15, 0.85), (0.15, 0.15)]
+API_DEFAULT_TIMEOUT = 1.25   # s of data collection per point (CALIBRATE_TIMEOUT)
+API_DEFAULT_DELAY = 0.5      # s of animation before each point (CALIBRATE_DELAY)
+
+
 def presentation_order(points) -> list[int]:
     """Centre first, then nearest-neighbour tour (short eye movements)."""
     pts = np.array(points)
@@ -138,12 +145,25 @@ class CalibrationError(RuntimeError):
 
 
 @dataclass
+class PointFit:
+    """Calibration result at one target: where each calibrated eye's gaze
+    lands (median over the target's samples) and whether it was usable."""
+    target: int
+    x: float                                   # target, screen points
+    y: float
+    gaze: dict[str, tuple[float, float]]       # eye -> predicted gaze (screen points)
+    valid: dict[str, bool]                     # eye -> enough samples at this target
+
+
+@dataclass
 class Calibration:
     """Per-eye PCR -> screen mappings plus the context they were made in."""
     eyes: dict[str, EyeFit]
     screen: Screen
     area: Rect
     created: float = field(default_factory=time.time)
+    points: list[PointFit] = field(default_factory=list)
+    meta: dict = field(default_factory=dict)   # e.g. reference_depth_m, ipd_mm
 
     # -------------------------------------------------------------- fitting
     @classmethod
@@ -181,7 +201,13 @@ class Calibration:
                 if best is None or loo < best[1]:
                     best = (name, loo)
             if best is None:
-                continue
+                if len(P) < 3:
+                    continue
+                # too few points for leave-one-out model selection (e.g. an eye
+                # lost at some targets): plain affine fit, rather than no eye
+                m0 = Mapping.fit("affine", P, S)
+                res0 = [np.hypot(*(np.array(m0(p)) - s)) for p, s in zip(P, S)]
+                best = ("affine", float(np.median(res0)) if len(P) > 3 else float("nan"))
             m = Mapping.fit(best[0], P, S)
             res = [np.hypot(*(np.array(m(p)) - s)) for p, s in zip(P, S)]
             fits[eye] = EyeFit(m, len(P), best[1], float(np.median(res)))
@@ -189,7 +215,41 @@ class Calibration:
             raise CalibrationError(
                 "no eye had enough calibration points - check that the eyes are "
                 "visible (opengp3 view) and that the targets are within the GP3's range")
-        return cls(fits, screen, area or screen.rect)
+        points = []
+        for ti in targets:
+            ss = [s for s in samples if s.target == ti]
+            gaze, valid = {}, {}
+            for eye in EYES:
+                se = [s for s in ss if s.eye == eye]
+                valid[eye] = eye in fits and len(se) >= min_samples
+                if valid[eye]:
+                    gaze[eye] = fits[eye].mapping(np.median([(s.pcr_x, s.pcr_y) for s in se], axis=0))
+            points.append(PointFit(ti, ss[0].x, ss[0].y, gaze, valid))
+        return cls(fits, screen, area or screen.rect, points=points)
+
+    @property
+    def average_error(self) -> float:
+        """Mean distance (screen points) between calibrated gaze and target
+        over all valid eye/target pairs."""
+        errs = [np.hypot(g[0] - p.x, g[1] - p.y) for p in self.points for g in p.gaze.values()]
+        return float(np.mean(errs)) if errs else float("nan")
+
+    @property
+    def valid_points(self) -> int:
+        """Targets where at least one eye calibrated successfully."""
+        return sum(1 for p in self.points if any(p.valid.values()))
+
+    def with_offset(self, offsets: dict[str, tuple[float, float]]) -> "Calibration":
+        """Copy with each eye's mapping shifted by (dx, dy) screen points
+        (1-point recalibration: keeps the shape, corrects drift)."""
+        eyes = {}
+        for side, f in self.eyes.items():
+            dx, dy = offsets.get(side, (0.0, 0.0))
+            cx, cy = f.mapping.cx.copy(), f.mapping.cy.copy()
+            cx[0] += dx
+            cy[0] += dy
+            eyes[side] = EyeFit(Mapping(f.mapping.model, cx, cy), f.n_points, f.loo_error, f.residual)
+        return Calibration(eyes, self.screen, self.area, time.time(), [], dict(self.meta))
 
     # -------------------------------------------------------------- use
     def predict(self, eyes: dict) -> tuple[float, float, dict[str, tuple[float, float]]] | None:
@@ -231,6 +291,7 @@ class Calibration:
             "eyes": {side: {**f.mapping.to_dict(), "n_points": f.n_points,
                             "loo_error": f.loo_error, "residual": f.residual}
                      for side, f in self.eyes.items()},
+            "meta": self.meta,
         }
 
     def save(self, path: str):
@@ -244,7 +305,7 @@ class Calibration:
                 for side, e in d["eyes"].items()}
         return cls(eyes, Screen(s["width"], s["height"], s.get("width_cm"),
                                 s.get("distance_cm", 65.0)),
-                   Rect(*d["area"]), d.get("created", 0.0))
+                   Rect(*d["area"]), d.get("created", 0.0), meta=d.get("meta", {}))
 
     @classmethod
     def load(cls, path: str) -> "Calibration":

@@ -2,33 +2,8 @@ import cv2
 import numpy as np
 import pytest
 
+from conftest import synth_eye_image
 from opengp3 import EyeTracker, detect_eyes
-
-
-def synth_eye_image(eyes, size=(752, 480), seed=0):
-    """Grey face, darker iris, dark pupil, and a pair of saturated glints
-    (the GP3's two LED banks) per eye. eyes: [(pupil_x, pupil_y, glint_dx, glint_dy)]"""
-    w, h = size
-    img = np.full((h, w), 150, np.uint8)
-    glints = np.zeros((h, w), np.float32)
-    for px, py, gdx, gdy in eyes:
-        cv2.circle(img, (int(px), int(py)), 28, 80, -1, cv2.LINE_AA)
-        # sub-pixel pupil via supersampling
-        big = np.zeros((h * 4, w * 4), np.uint8)
-        cv2.circle(big, (int(px * 4), int(py * 4)), 36, 255, -1)
-        mask = cv2.resize(big, (w, h), interpolation=cv2.INTER_AREA) / 255.0
-        img = (img * (1 - mask) + 35 * mask).astype(np.uint8)
-        gx, gy = px - gdx, py - gdy
-        for ox in (-3.5, 3.5):
-            cv2.circle(glints, (int(round(gx + ox)), int(round(gy))), 2, 1.0, -1)
-    img = cv2.GaussianBlur(img, (3, 3), 0).astype(np.float32)
-    rng = np.random.default_rng(seed)
-    img = img + rng.normal(0, 2, img.shape)
-    # real GP3 glints: saturated core (5-20 px) with a ~2 px bloom halo
-    halo = cv2.GaussianBlur(glints, (7, 7), 1.5)
-    img = np.maximum(img, 255 * np.minimum(1.0, 2.2 * halo))
-    img[glints > 0] = 255
-    return np.clip(img, 0, 255).astype(np.uint8)
 
 
 def test_detects_both_eyes_and_pcr():

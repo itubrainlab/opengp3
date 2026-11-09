@@ -41,3 +41,15 @@ def test_one_euro_reduces_jitter_but_follows_jumps():
     assert out[still].std() < 0.5 * x[still].std()
     # within 150 ms after the saccade it should be most of the way there
     assert out[np.searchsorted(t, 2.15)] > 1000
+
+
+def test_certified_area_limits_large_screens_to_22_inch():
+    big = Screen(3440, 1440, width_cm=80.0)                 # 34" ultrawide
+    a = big.certified_area()
+    assert big.diagonal_in == pytest.approx(34.1, abs=0.2)
+    assert a.w * big.cm_per_point == pytest.approx(48.7, abs=0.1)
+    assert big.certified_area(None) == big.rect              # explicit override
+    small = Screen(1920, 1080, width_cm=47.6)                # 21.5"
+    assert small.certified_area() == small.rect
+    unknown = Screen(1920, 1080)                             # no physical size known
+    assert unknown.certified_area() == unknown.rect

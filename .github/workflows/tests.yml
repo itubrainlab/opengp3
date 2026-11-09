@@ -10,10 +10,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        os: [macos-latest, ubuntu-latest, windows-latest]
         python: ["3.9", "3.13"]
-        exclude:  # Ubuntu 26.04 runners no longer provide EOL Python 3.9
+        exclude:  # Python 3.9 (EOL) is no longer provided on these runners
           - os: ubuntu-latest
+            python: "3.9"
+          - os: windows-latest
             python: "3.9"
     runs-on: ${{ matrix.os }}
     steps:

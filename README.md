@@ -20,7 +20,8 @@ with GazeTracker() as gt:                 # screen size (and physical width) det
 ## Install
 
 ```bash
-pip install opengp3
+pip install git+https://github.com/itubrainlab/opengp3          # latest
+pip install git+https://github.com/itubrainlab/opengp3@v0.2.0   # a release
 ```
 
 libusb comes bundled (via `libusb-package`). One-time USB access setup per OS:

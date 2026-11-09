@@ -12,6 +12,9 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest]
         python: ["3.9", "3.13"]
+        exclude:  # Ubuntu 26.04 runners no longer provide EOL Python 3.9
+          - os: ubuntu-latest
+            python: "3.9"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

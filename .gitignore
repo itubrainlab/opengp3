@@ -1,0 +1,16 @@
+# environments / build artefacts
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.DS_Store
+
+# local recordings: IR images of faces, calibrations, gaze logs (personal data)
+test_frames/
+*.npz
+*.png
+*.csv
+calibration*.json

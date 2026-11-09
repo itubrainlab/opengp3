@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opengp3"
+dynamic = ["version"]
+description = "macOS user-space driver and gaze tracker for the Gazepoint GP3 eye tracker"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Paolo Burelli", email = "burelli@gmail.com" }]
+requires-python = ">=3.9"
+dependencies = [
+    "pyusb>=1.2",
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+]
+keywords = ["eye tracking", "gaze", "gazepoint", "gp3", "libusb", "macos", "calibration"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Human Machine Interfaces",
+    "Topic :: System :: Hardware :: Hardware Drivers",
+]
+
+[project.urls]
+Homepage = "https://github.com/itubrainlab/opengp3"
+Issues = "https://github.com/itubrainlab/opengp3/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+opengp3 = "opengp3.cli:main"
+
+[tool.setuptools]
+packages = ["opengp3"]
+
+[tool.setuptools.dynamic]
+version = { attr = "opengp3.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

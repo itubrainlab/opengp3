@@ -21,7 +21,7 @@ with GazeTracker() as gt:                 # screen size (and physical width) det
 
 ```bash
 pip install git+https://github.com/itubrainlab/opengp3          # latest
-pip install git+https://github.com/itubrainlab/opengp3@v0.2.1   # a release
+pip install git+https://github.com/itubrainlab/opengp3@v0.3.0   # a release
 ```
 
 libusb comes bundled (via `libusb-package`). USB access per OS:
@@ -47,7 +47,7 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 ## Command line
 
 ```bash
-opengp3 server --lsl                           # Open Gaze API server (port 4242), LSL streams, tracker window
+opengp3 server                                 # Open Gaze API server (port 4242), LSL streams, tracker window
 opengp3 view                                   # live IR image, eye overlay, head-position hints
 opengp3 calibrate --validate --plot accuracy.png                    # full screen, 9 points
 opengp3 calibrate --points 13 --area-diag-in 22                     # centred 22" area
@@ -74,11 +74,11 @@ opengp3 setup                                  # Linux: one-time USB permission 
 ### `opengp3 server`: Gazepoint Control replacement
 
 ```bash
-opengp3 server [--lsl] [--points 9|5] [--host 0.0.0.0] [--port 4242] [--monocular R|L]
+opengp3 server [--no-lsl] [--points 9|5] [--host 0.0.0.0] [--port 4242] [--monocular R|L]
                [--auto-gain] [--media DIR] [--no-mirror]
 ```
 
-- **Lab Streaming Layer (`--lsl`, needs `pip install "opengp3[lsl] @ git+https://github.com/itubrainlab/opengp3"`):**
+- **Lab Streaming Layer, on by default** (`--no-lsl` turns it off; pylsl is installed with OpenGP3):
   - **`OpenGP3 Gaze`** (type `Gaze`, 60 Hz, 26 float channels, named after the Open Gaze API fields):
     binocular, fixation and per-eye gaze (screen fractions), pupil size in mm, pupil positions in the
     camera image, eye distance, blinks and cursor.

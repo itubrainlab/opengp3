@@ -17,7 +17,7 @@ High level::
 Low level: ``GP3Camera`` (registers, frames, IR LEDs), ``detect_eyes`` and
 ``EyeTracker`` (pupil/glint features per frame).
 """
-__version__ = "0.2.1"  # defined first: submodules import it
+__version__ = "0.3.0"  # defined first: submodules import it
 
 from .calibration import (VALIDATION_POINTS, Calibration, CalibrationError, Mapping,
                           ValidationResult, grid_points)

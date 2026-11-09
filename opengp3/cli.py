@@ -8,7 +8,7 @@
     opengp3 validate --calibration cal.json
     opengp3 track --calibration cal.json [--csv gaze.csv] [--show]
     opengp3 accuracy [--points 9] [--area-diag-in 22] [--plot result.png]
-    opengp3 server [--port 4242] [--host 0.0.0.0]  Open Gaze API server + control window
+    opengp3 server [--port 4242] [--host 0.0.0.0]  Open Gaze API server + LSL + control window
     opengp3 marker marker.png [--mm 11]            printable marker for pupil size in mm
     opengp3 setup                                  Linux: one-time USB permission rule
 
@@ -326,10 +326,13 @@ def cmd_server(a):
         srv = OpenGazeServer(gt, a.host, a.port,
                              default_points=API_DEFAULT_POINTS if a.points == 5 else NINE_POINTS).start()
         lsl = None
-        if a.lsl:
-            from .lsl import LSLStreamer
-            lsl = LSLStreamer(gt)
-            print("LSL streams: 'OpenGP3 Gaze' (60 Hz) and 'OpenGP3 Markers'", flush=True)
+        if not a.no_lsl:
+            try:
+                from .lsl import LSLStreamer
+                lsl = LSLStreamer(gt)
+                print("LSL streams: 'OpenGP3 Gaze' (60 Hz) and 'OpenGP3 Markers'", flush=True)
+            except Exception as e:  # e.g. liblsl unavailable: keep serving the API
+                print(f"LSL streaming disabled: {e}", flush=True)
         print(f"Open Gaze API server listening on {a.host}:{srv.port}  "
               f"(screen {screen.width}x{screen.height}"
               + (f", {screen.width_cm:.1f} cm" if screen.width_cm else "") + ")", flush=True)
@@ -453,8 +456,9 @@ def main(argv=None):
                    help="calibrate on the whole screen even if it is larger than 22\"")
     s.add_argument("--points", type=int, choices=[5, 9], default=9,
                    help="default calibration (also restored by CALIBRATE_RESET)")
-    s.add_argument("--lsl", action="store_true",
-                   help="stream gaze and markers on Lab Streaming Layer (needs opengp3[lsl])")
+    s.add_argument("--no-lsl", action="store_true",
+                   help="don't stream gaze and markers on Lab Streaming Layer (on by default)")
+    s.add_argument("--lsl", action="store_true", help=argparse.SUPPRESS)  # old flag, now the default
     s.add_argument("--no-mirror", action="store_true", help="show the camera image unmirrored")
     s.set_defaults(fn=cmd_server)
 

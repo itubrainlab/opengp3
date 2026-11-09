@@ -16,6 +16,7 @@ dependencies = [
     "libusb-package>=1.0.26",
     "numpy>=1.24",
     "opencv-python>=4.8",
+    "pylsl>=1.16",
 ]
 keywords = ["eye tracking", "gaze", "gazepoint", "gp3", "libusb", "open gaze api", "calibration"]
 classifiers = [
@@ -36,8 +37,8 @@ Homepage = "https://github.com/itubrainlab/opengp3"
 Issues = "https://github.com/itubrainlab/opengp3/issues"
 
 [project.optional-dependencies]
-lsl = ["pylsl>=1.16"]
-dev = ["pytest>=7", "pylsl>=1.16"]
+lsl = []  # kept so existing "opengp3[lsl]" installs keep working; pylsl is now a core dependency
+dev = ["pytest>=7"]
 
 [project.scripts]
 opengp3 = "opengp3.cli:main"

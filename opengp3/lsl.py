@@ -1,6 +1,6 @@
 """Lab Streaming Layer (LSL) output for a running GazeTracker.
 
-Two outlets (needs ``pip install opengp3[lsl]``, i.e. pylsl):
+Two outlets (``opengp3 server`` publishes them by default):
 
 * **OpenGP3 Gaze** (type ``Gaze``, 60 Hz, float32): one sample per camera
   frame; channel names follow the Open Gaze API fields (see ``CHANNELS``).
@@ -60,7 +60,7 @@ def _require_pylsl():
         import pylsl
         return pylsl
     except ImportError as e:
-        raise RuntimeError("LSL streaming needs pylsl: pip install 'opengp3[lsl]'") from e
+        raise RuntimeError("LSL streaming needs pylsl (pip install pylsl)") from e
 
 
 class LSLStreamer:

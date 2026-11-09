@@ -24,12 +24,12 @@ pip install git+https://github.com/itubrainlab/opengp3          # latest
 pip install git+https://github.com/itubrainlab/opengp3@v0.2.0   # a release
 ```
 
-libusb comes bundled (via `libusb-package`). One-time USB access setup per OS:
+libusb comes bundled (via `libusb-package`). USB access per OS:
 
 | OS | Setup |
 |---|---|
 | macOS | nothing |
-| Linux | allow non-root access with a udev rule: run `opengp3 udev` and follow the two commands it prints, then replug the GP3 |
+| Linux | automatic: the first time OpenGP3 is denied access to the GP3, it installs a udev rule after one administrator password prompt (pkexec in a desktop session, sudo in a terminal) and continues. `opengp3 setup` does this explicitly; set `OPENGP3_NO_AUTO_SETUP=1` to disable the automatic prompt (e.g. for services) |
 | Windows | bind the **WinUSB** driver to the GP3 camera with [Zadig](https://zadig.akeo.ie) ("USB 2.0 Digital Imaging Camera", `1E10 2001`). Gazepoint's own driver can't be used through libusb, so Gazepoint Control can't use the camera while WinUSB is bound (Zadig/Device Manager can switch back). |
 
 Requirements: Python ≥ 3.9. Only one program can use the GP3 at a time. Mouse/keyboard data and the
@@ -57,7 +57,8 @@ opengp3 track     --calibration calibration.json --show             # fullscreen
 opengp3 track     --calibration calibration.json --pointer          # mouse follows your gaze
 opengp3 record eyes.csv --duration 10          # raw pupil/glint features per frame
 opengp3 marker marker.png --mm 11              # printable marker for pupil size in mm
-opengp3 info | snapshot eye.png | udev
+opengp3 info | snapshot eye.png
+opengp3 setup                                  # Linux: one-time USB permission rule (also automatic)
 ```
 
 - **22" limit:** the GP3 is specified for screens up to 22". On a larger display, calibration and

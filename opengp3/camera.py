@@ -112,11 +112,15 @@ def _libusb_backend():
                               "(or install libusb with your package manager)")
 
 
+class _NoPermission(Exception):
+    """Device found but the OS refused access (EACCES)."""
+
+
 def _access_help() -> str:
     """OS-specific hint when the device exists but cannot be opened."""
     if sys.platform.startswith("linux"):
-        return ("on Linux, allow non-root access with a udev rule: run "
-                "'opengp3 udev' for instructions")
+        return ("on Linux, run 'opengp3 setup' once (installs a udev rule; asks for the "
+                "administrator password)")
     if sys.platform == "win32":
         return ("on Windows, libusb needs the WinUSB driver on the GP3 camera: install it with "
                 "Zadig (https://zadig.akeo.ie, device 'USB 2.0 Digital Imaging Camera', "
@@ -152,7 +156,45 @@ class GP3Camera:
 
     # ---------------------------------------------------------------- setup
     @classmethod
-    def open(cls) -> "GP3Camera":
+    def open(cls, auto_setup: bool | None = None) -> "GP3Camera":
+        """Open the first GP3 on the USB bus.
+
+        On Linux, if access is denied and the udev rule is missing, the rule
+        is installed automatically (one administrator password prompt per
+        machine) and opening is retried. ``auto_setup=False`` or the
+        environment variable OPENGP3_NO_AUTO_SETUP=1 disables this.
+        """
+        try:
+            return cls._open()
+        except _NoPermission as e:
+            if not sys.platform.startswith("linux"):
+                raise GP3Error(f"no permission to open the GP3: {_access_help()}") from e
+            from . import permissions
+            if auto_setup is None:
+                auto_setup = permissions.auto_setup_enabled()
+            if permissions.rule_installed():
+                raise GP3Error("no permission to open the GP3 although the udev rule is installed: "
+                               "unplug and replug the GP3") from e
+            if not auto_setup:
+                raise GP3Error("no permission to open the GP3.\n"
+                               + permissions.manual_instructions()) from e
+            try:
+                permissions.install()
+            except permissions.SetupError as se:
+                raise GP3Error(str(se)) from e
+            # udev applies the new permissions asynchronously: retry briefly
+            t_end = time.time() + 5.0
+            while True:
+                try:
+                    return cls._open()
+                except _NoPermission as e2:
+                    if time.time() > t_end:
+                        raise GP3Error("udev rule installed, but access is still denied: unplug "
+                                       "and replug the GP3") from e2
+                    time.sleep(0.3)
+
+    @classmethod
+    def _open(cls) -> "GP3Camera":
         backend = _libusb_backend()
         for pid in PIDS:
             dev = usb.core.find(idVendor=VID, idProduct=pid, backend=backend)
@@ -166,14 +208,19 @@ class GP3Camera:
             try:  # vendor-specific device: normally no kernel driver, but be safe
                 if dev.is_kernel_driver_active(0):
                     dev.detach_kernel_driver(0)
-            except (usb.core.USBError, NotImplementedError):
+            except usb.core.USBError as e:
+                if e.errno == 13:
+                    usb.util.dispose_resources(dev)
+                    raise _NoPermission() from e
+            except NotImplementedError:
                 pass
         try:
             if dev.get_active_configuration() is None:
                 dev.set_configuration(1)
         except usb.core.USBError as e:
             if e.errno == 13:  # EACCES
-                raise GP3Error(f"no permission to open the GP3: {_access_help()}") from e
+                usb.util.dispose_resources(dev)
+                raise _NoPermission() from e
             try:
                 dev.set_configuration(1)
             except usb.core.USBError as e2:
@@ -182,7 +229,8 @@ class GP3Camera:
                         "GP3 disappeared or is held by another process "
                         "(close other OpenGP3 programs)") from e2
                 if e2.errno == 13:
-                    raise GP3Error(f"no permission to open the GP3: {_access_help()}") from e2
+                    usb.util.dispose_resources(dev)
+                    raise _NoPermission() from e2
                 if e2.errno not in (16, None):
                     raise GP3Error(f"cannot open the GP3 ({e2}): {_access_help()}") from e2
         except NotImplementedError as e:  # Windows without WinUSB driver

@@ -10,7 +10,7 @@
     opengp3 accuracy [--points 9] [--area-diag-in 22] [--plot result.png]
     opengp3 server [--port 4242] [--host 0.0.0.0]  Open Gaze API server + control window
     opengp3 marker marker.png [--mm 11]            printable marker for pupil size in mm
-    opengp3 udev                                   Linux: USB permission rule
+    opengp3 setup                                  Linux: one-time USB permission rule
 
 Screen options (all gaze commands): --screen-width-cm (needed for degrees),
 --distance-cm (default 65).
@@ -343,15 +343,24 @@ def cmd_marker(a):
           "the black square and use that size (laser printers: inkjet ink can be invisible in IR).")
 
 
-UDEV_RULE = ('SUBSYSTEM=="usb", ATTR{idVendor}=="1e10", ATTR{idProduct}=="2001", '
-             'MODE="0660", TAG+="uaccess"')
-
-
-def cmd_udev(a):
-    print("Allow non-root access to the GP3 camera on Linux:\n")
-    print(f"  echo '{UDEV_RULE}' | sudo tee /etc/udev/rules.d/60-opengp3.rules")
-    print("  sudo udevadm control --reload-rules && sudo udevadm trigger")
-    print("\nthen unplug and replug the GP3.")
+def cmd_setup(a):
+    """One-time OS setup for USB access (Linux: udev rule)."""
+    import sys as _sys
+    from . import permissions
+    if not _sys.platform.startswith("linux"):
+        if _sys.platform == "win32":
+            print("Windows: bind the WinUSB driver to the GP3 camera with Zadig "
+                  "(https://zadig.akeo.ie, 'USB 2.0 Digital Imaging Camera', 1E10 2001).")
+        else:
+            print("No setup needed on this system.")
+        return
+    if a.print_only:
+        print(permissions.manual_instructions())
+        return
+    if permissions.rule_installed() and not a.force:
+        print(f"Already set up ({permissions.RULE_PATH}). If access is still denied, replug the GP3.")
+        return
+    permissions.install()
 
 
 # ------------------------------------------------------------------ main
@@ -440,7 +449,11 @@ def main(argv=None):
     s.add_argument("--dpi", type=int, default=600)
     s.set_defaults(fn=cmd_marker)
 
-    sub.add_parser("udev", help="Linux USB permission rule").set_defaults(fn=cmd_udev)
+    for name in ("setup", "udev"):
+        s = sub.add_parser(name, help="one-time USB permission setup (Linux udev rule)")
+        s.add_argument("--print-only", action="store_true", help="only print the manual commands")
+        s.add_argument("--force", action="store_true", help="reinstall the rule")
+        s.set_defaults(fn=cmd_setup)
 
     a = p.parse_args(argv)
 
@@ -449,7 +462,7 @@ def main(argv=None):
     except Cancelled:
         print("cancelled")
         return 1
-    except (GP3Error, CalibrationError) as e:
+    except (GP3Error, CalibrationError, RuntimeError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     return 0

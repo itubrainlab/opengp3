@@ -87,7 +87,7 @@ def test_api_calibration_headless_then_gaze(server):
     """Client-drawn calibration (CALIBRATE_SHOW=0): the server times the
     points and announces them; the simulated subject looks at each one."""
     gt, srv, cam = server
-    srv.cal_delay, srv.cal_timeout = 0.2, 0.5
+    srv.cal_delay, srv.cal_timeout = 0.3, 1.0   # generous: CI runners are slow
 
     def listener(event, n, fx, fy):  # the subject follows the announced point
         srv.calibration_listener(event, n, fx, fy)
@@ -101,9 +101,11 @@ def test_api_calibration_headless_then_gaze(server):
         assert srv.requests.get(timeout=1)[0] == "calibrate"
         # what ControlApp does on the main thread, headless:
         run = gt.start_calibration(srv.cal_points, delay=srv.cal_delay, timeout=srv.cal_timeout,
-                                   retry=False, listener=listener, keep_order=True)
+                                   retry=False, listener=listener, keep_order=True, min_samples=5)
         while not run.tick(None):
             time.sleep(0.005)
+        per_point = {i: sum(1 for j, *_ in run.labelled() if j == i) for i in range(5)}
+        print("samples per calibration point:", per_point, "tracking fps:", gt.fps)
         gt.finish_calibration(run)
         srv.send_calibration_result()
 

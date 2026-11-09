@@ -59,6 +59,7 @@ class GazeSample:
     cursor: tuple[float, float, int] | None = None  # global x, y, button state (API CS)
     key: tuple[str, int] = (" ", 0)                 # key name, state (API KB/KBS)
     marker: MarkerReading | None = None
+    user: str = ""                                  # user marker active for this frame
 
     @property
     def valid(self) -> bool:
@@ -434,6 +435,7 @@ class GazeTracker:
     def _enrich(self, s: GazeSample, img) -> GazeSample:
         """Calibrated gaze, fixation/blink/AAC filters, eye metrics, inputs."""
         t, W, H = s.t, self.screen.width, self.screen.height
+        s.user = self.user_data
         cal = self.calibration
         if cal is not None:
             g = cal.predict(s.eyes)

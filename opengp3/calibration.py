@@ -66,6 +66,10 @@ def presentation_order(points) -> list[int]:
     return order
 
 
+# 9-point grid at the same 15 % / 85 % margins, centre first then a short tour
+NINE_POINTS = [(x, y) for y in (0.15, 0.5, 0.85) for x in (0.15, 0.5, 0.85)]
+NINE_POINTS = [NINE_POINTS[i] for i in presentation_order(NINE_POINTS)]
+
 # Validation points sit between the 3x3 calibration points, so validation
 # measures interpolation accuracy on positions the calibration never saw.
 VALIDATION_POINTS = [(0.3, 0.3), (0.7, 0.3), (0.3, 0.7), (0.7, 0.7),

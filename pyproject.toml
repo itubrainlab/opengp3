@@ -36,7 +36,8 @@ Homepage = "https://github.com/itubrainlab/opengp3"
 Issues = "https://github.com/itubrainlab/opengp3/issues"
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+lsl = ["pylsl>=1.16"]
+dev = ["pytest>=7", "pylsl>=1.16"]
 
 [project.scripts]
 opengp3 = "opengp3.cli:main"

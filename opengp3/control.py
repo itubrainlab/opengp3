@@ -24,28 +24,36 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .calibration import API_DEFAULT_POINTS, Calibration, CalibrationError
+from .calibration import API_DEFAULT_POINTS, NINE_POINTS, Calibration, CalibrationError
 from .display import Cancelled, StimulusWindow
 from .server import OpenGazeServer
 from .tracker import GazeTracker, distance_label
 
-NINE_POINTS = [(x, y) for y in (0.15, 0.5, 0.85) for x in (0.15, 0.5, 0.85)]
 
 
 def default_calibration_path() -> Path:
     return Path(os.environ.get("OPENGP3_HOME", Path.home() / ".opengp3")) / "calibration.json"
 
 
-def render_tracker_view(img: np.ndarray, sample, fps: float, lines=()) -> np.ndarray:
-    """Camera image with eye overlay, head-position and status text."""
+def render_tracker_view(img: np.ndarray, sample, fps: float, lines=(), mirror: bool = False) -> np.ndarray:
+    """Camera image with eye overlay, head-position and status text.
+
+    mirror=True flips the image horizontally so it behaves like a mirror for
+    the person in front of the tracker (only the display; data is unchanged).
+    Shapes are drawn before flipping, text after, so labels stay readable.
+    """
     vis = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    h, w = img.shape
     eyes = sample.eyes if sample else {}
     for side, e in eyes.items():
         cv2.circle(vis, (int(e.pupil_x), int(e.pupil_y)), int(e.pupil_r) + 1, (0, 255, 0), 1)
         cv2.drawMarker(vis, (int(e.glint_x), int(e.glint_y)), (0, 0, 255), cv2.MARKER_CROSS, 8)
-        cv2.putText(vis, side, (int(e.pupil_x) - 5, int(e.pupil_y) - int(e.pupil_r) - 8),
+    if mirror:
+        vis = cv2.flip(vis, 1)
+    for side, e in eyes.items():
+        x = w - 1 - e.pupil_x if mirror else e.pupil_x
+        cv2.putText(vis, side, (int(x) - 5, int(e.pupil_y) - int(e.pupil_r) - 8),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-    h, w = img.shape
     if len(eyes) == 2:
         status, col = "both eyes", (0, 255, 0)
     elif eyes:
@@ -53,13 +61,14 @@ def render_tracker_view(img: np.ndarray, sample, fps: float, lines=()) -> np.nda
     else:
         status, col = "no eyes", (0, 0, 255)
     if eyes:
+        # in camera coordinates the subject's right is the image left
         xs = [e.pupil_x for e in eyes.values()]
         ys = [e.pupil_y for e in eyes.values()]
         m, hint = 0.08, []
-        if min(xs) < m * w: hint.append("move head toward image right")
-        if max(xs) > (1 - m) * w: hint.append("move head toward image left")
-        if min(ys) < m * h: hint.append("lower head / tilt GP3 up")
-        if max(ys) > (1 - m) * h: hint.append("raise head / tilt GP3 down")
+        if min(xs) < m * w: hint.append("move to your left")
+        if max(xs) > (1 - m) * w: hint.append("move to your right")
+        if min(ys) < m * h: hint.append("lower your head / tilt GP3 up")
+        if max(ys) > (1 - m) * h: hint.append("raise your head / tilt GP3 down")
         if hint:
             status += " - " + ", ".join(hint)
     cv2.putText(vis, f"{fps:.1f} fps  {status}", (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, col, 1)
@@ -87,8 +96,11 @@ class ControlApp:
     TRACKER_WIN = "OpenGP3 tracker (c: calibrate, p: pointer, g: gain sweep, q: quit)"
 
     def __init__(self, tracker: GazeTracker, server: OpenGazeServer, show_tracker: bool = True,
-                 media_dir: str | None = None, save_path: Path | None = None):
+                 media_dir: str | None = None, save_path: Path | None = None,
+                 mirror: bool = True, lsl=None):
         self.gt, self.srv = tracker, server
+        self.mirror = mirror
+        self.lsl = lsl  # optional LSLStreamer: gets calibration event markers
         self.media_dir = media_dir
         self.save_path = save_path or default_calibration_path()
         self.show_tracker = show_tracker
@@ -111,8 +123,13 @@ class ControlApp:
         self.run = self.gt.start_calibration(
             self.srv.cal_points, delay=self.srv.cal_delay * self.speed,
             timeout=self.srv.cal_timeout * self.speed, retry=False,
-            listener=self.srv.calibration_listener, sound=self.sound,
+            listener=self._calibration_event, sound=self.sound,
             media_dir=self.media_dir, keep_order=True)
+
+    def _calibration_event(self, event, n, fx, fy):
+        self.srv.calibration_listener(event, n, fx, fy)
+        if self.lsl is not None:
+            self.lsl.marker(f"calibration_{event} {n} {fx:.4f} {fy:.4f}")
 
     def _finish_calibration(self):
         run, self.run = self.run, None
@@ -233,7 +250,9 @@ class ControlApp:
                  + ("   gain sweep ON" if self.gt.auto_gain else "")]
         if self.message:
             lines.append(self.message)
-        cv2.imshow(self.TRACKER_WIN, render_tracker_view(img, s, self.gt.fps, lines))
+        if self.lsl is not None:
+            lines.append(f"LSL streaming: {self.lsl.samples} samples")
+        cv2.imshow(self.TRACKER_WIN, render_tracker_view(img, s, self.gt.fps, lines, self.mirror))
 
     def _tracker_key(self, key: int):
         if key < 0 or key == 255:

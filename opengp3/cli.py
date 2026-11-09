@@ -320,17 +320,27 @@ def cmd_server(a):
             print(f"could not load calibration {src}: {e}")
     gt = GazeTracker(screen, calibration=cal, monocular=a.monocular, auto_gain=a.auto_gain,
                      aac_length=a.aac_filter, max_diagonal_in=_max_diag(a))
+    from .calibration import API_DEFAULT_POINTS, NINE_POINTS
     with gt:
         _report_area(gt)
-        srv = OpenGazeServer(gt, a.host, a.port).start()
+        srv = OpenGazeServer(gt, a.host, a.port,
+                             default_points=API_DEFAULT_POINTS if a.points == 5 else NINE_POINTS).start()
+        lsl = None
+        if a.lsl:
+            from .lsl import LSLStreamer
+            lsl = LSLStreamer(gt)
+            print("LSL streams: 'OpenGP3 Gaze' (60 Hz) and 'OpenGP3 Markers'", flush=True)
         print(f"Open Gaze API server listening on {a.host}:{srv.port}  "
               f"(screen {screen.width}x{screen.height}"
               + (f", {screen.width_cm:.1f} cm" if screen.width_cm else "") + ")", flush=True)
         try:
-            ControlApp(gt, srv, show_tracker=not a.no_display, media_dir=a.media).loop()
+            ControlApp(gt, srv, show_tracker=not a.no_display, media_dir=a.media,
+                       mirror=not a.no_mirror, lsl=lsl).loop()
         except KeyboardInterrupt:
             pass
         finally:
+            if lsl is not None:
+                lsl.close()
             srv.stop()
 
 
@@ -441,6 +451,11 @@ def main(argv=None):
     s.add_argument("--media", help="folder with CalibPoint<N>.png/.mp3 calibration targets")
     s.add_argument("--full-screen", action="store_true",
                    help="calibrate on the whole screen even if it is larger than 22\"")
+    s.add_argument("--points", type=int, choices=[5, 9], default=9,
+                   help="default calibration (also restored by CALIBRATE_RESET)")
+    s.add_argument("--lsl", action="store_true",
+                   help="stream gaze and markers on Lab Streaming Layer (needs opengp3[lsl])")
+    s.add_argument("--no-mirror", action="store_true", help="show the camera image unmirrored")
     s.set_defaults(fn=cmd_server)
 
     s = sub.add_parser("marker", help="printable marker for real-world pupil size")

@@ -25,7 +25,8 @@ from dataclasses import dataclass, field
 import cv2
 
 from . import __version__
-from .calibration import API_DEFAULT_DELAY, API_DEFAULT_POINTS, API_DEFAULT_TIMEOUT, EYES
+from .calibration import (API_DEFAULT_DELAY, API_DEFAULT_POINTS, API_DEFAULT_TIMEOUT, EYES,
+                          NINE_POINTS)
 from .screen import Screen
 from .tracker import GazeSample, GazeTracker
 
@@ -85,7 +86,7 @@ class OpenGazeServer:
     """
 
     def __init__(self, tracker: GazeTracker, host: str = "127.0.0.1", port: int = 4242,
-                 product: str = "GP3"):
+                 product: str = "GP3", default_points=None):
         self.tracker, self.host, self.port, self.product = tracker, host, port, product
         self.clients: list[_Client] = []
         self._lock = threading.Lock()
@@ -93,7 +94,9 @@ class OpenGazeServer:
         self._running = False
         self.requests: queue.Queue = queue.Queue()
         # server state (Gazepoint Control equivalents)
-        self.cal_points = list(API_DEFAULT_POINTS)
+        #: calibration points restored by CALIBRATE_RESET (default: 9-point grid)
+        self.default_points = list(default_points or NINE_POINTS)
+        self.cal_points = list(self.default_points)
         self.cal_timeout = API_DEFAULT_TIMEOUT
         self.cal_delay = API_DEFAULT_DELAY
         self.cal_show = False
@@ -262,7 +265,7 @@ class OpenGazeServer:
             return ack(("PTS", len(self.cal_points)))
         if ident == "CALIBRATE_RESET":
             if setting:
-                self.cal_points = list(API_DEFAULT_POINTS)
+                self.cal_points = list(self.default_points)
             return ack(("PTS", len(self.cal_points)))
         if ident == "CALIBRATE_ADDPOINT":
             if setting:
@@ -457,7 +460,7 @@ class OpenGazeServer:
             r += [("PIXX", _f(mk.x if v else 0)), ("PIXY", _f(mk.y if v else 0)),
                   ("PIXS", _f(mk.mm_per_px if v else 0)), ("PIXV", int(v))]
         if on("USER_DATA"):
-            r.append(("USER", self.tracker.user_data))
+            r.append(("USER", s.user))
         return element("REC", r)
 
 

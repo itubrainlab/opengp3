@@ -44,10 +44,10 @@ def test_configuration_commands(server):
     assert 'VALUE="GP3"' in h("GET", "PRODUCT_ID")
     assert 'WIDTH="1920" HEIGHT="1080"' in h("GET", "SCREEN_SIZE")
     assert 'FREQ="' in h("GET", "TIME_TICK_FREQUENCY")
-    assert h("GET", "CALIBRATE_ADDPOINT").startswith('<ACK ID="CALIBRATE_ADDPOINT" PTS="5" X1="0.50000"')
+    assert h("GET", "CALIBRATE_ADDPOINT").startswith('<ACK ID="CALIBRATE_ADDPOINT" PTS="9" X1="0.50000"')
     assert 'PTS="0"' in h("SET", "CALIBRATE_CLEAR")
     assert 'PTS="1" X1="0.20000" Y1="0.30000"' in h("SET", "CALIBRATE_ADDPOINT", X=0.2, Y=0.3)
-    assert 'PTS="5"' in h("SET", "CALIBRATE_RESET")
+    assert 'PTS="9"' in h("SET", "CALIBRATE_RESET")             # server default: 9 points
     assert 'VALUE="2"' in h("SET", "CALIBRATE_TIMEOUT", VALUE=2)
     assert h("SET", "CALIBRATE_TIMEOUT", VALUE=0).startswith("<NACK")
     assert 'VALUE="7"' in h("SET", "AAC_FILTER", VALUE=7) and gt.aac.length == 7
@@ -94,7 +94,12 @@ def test_api_calibration_headless_then_gaze(server):
         if event == "start_pt":
             cam.look = (fx, fy)
 
+    from opengp3.calibration import API_DEFAULT_POINTS
     with OpenGazeClient(port=srv.port) as c:
+        c.set("CALIBRATE_CLEAR")                   # client-defined 5-point calibration
+        for x, y in API_DEFAULT_POINTS:
+            c.set("CALIBRATE_ADDPOINT", X=x, Y=y)
+        assert c.get("CALIBRATE_ADDPOINT")["PTS"] == "5"
         c.set("CALIBRATE_SHOW", STATE=0)
         assert c.set("CALIBRATE_START", STATE=1)["STATE"] == "1"
         assert srv.requests.get(timeout=1)[0] == "calibrate_show"
@@ -181,3 +186,14 @@ def test_user_data_one_shot(server):
             if len(users) >= 15:
                 break
     assert users.count("ONCE") == 1
+
+
+def test_default_points_option(server):
+    gt, srv, cam = server
+    from opengp3.calibration import API_DEFAULT_POINTS, NINE_POINTS
+    assert srv.cal_points == NINE_POINTS and NINE_POINTS[0] == (0.5, 0.5)
+    five = OpenGazeServer(gt, port=0, default_points=API_DEFAULT_POINTS)
+    c = _Client(sock=None, addr=None)
+    five.cal_points = []
+    assert 'PTS="5"' in five.handle(c, "SET", "CALIBRATE_RESET", {})[0]
+    five.stop()

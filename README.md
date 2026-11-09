@@ -47,7 +47,7 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 ## Command line
 
 ```bash
-opengp3 server                                 # Open Gaze API server (port 4242) + tracker window
+opengp3 server --lsl                           # Open Gaze API server (port 4242), LSL streams, tracker window
 opengp3 view                                   # live IR image, eye overlay, head-position hints
 opengp3 calibrate --validate --plot accuracy.png                    # full screen, 9 points
 opengp3 calibrate --points 13 --area-diag-in 22                     # centred 22" area
@@ -74,8 +74,23 @@ opengp3 setup                                  # Linux: one-time USB permission 
 ### `opengp3 server`: Gazepoint Control replacement
 
 ```bash
-opengp3 server [--host 0.0.0.0] [--port 4242] [--monocular R|L] [--auto-gain] [--media DIR]
+opengp3 server [--lsl] [--points 9|5] [--host 0.0.0.0] [--port 4242] [--monocular R|L]
+               [--auto-gain] [--media DIR] [--no-mirror]
 ```
+
+- **Lab Streaming Layer (`--lsl`, needs `pip install "opengp3[lsl] @ git+https://github.com/itubrainlab/opengp3"`):**
+  - **`OpenGP3 Gaze`** (type `Gaze`, 60 Hz, 26 float channels, named after the Open Gaze API fields):
+    binocular, fixation and per-eye gaze (screen fractions), pupil size in mm, pupil positions in the
+    camera image, eye distance, blinks and cursor.
+  - **`OpenGP3 Markers`** (type `Markers`): user markers from API clients (`USER_DATA`) and
+    calibration events.
+  - Timestamps are the frames' capture times on the LSL clock. From Python, use
+    `opengp3.lsl.LSLStreamer(tracker)`.
+- **Default calibration:** 9 points (3×3 at 15/50/85 %, centre first). `CALIBRATE_RESET` restores it;
+  `--points 5` makes the classic 5-point layout the default instead.
+- **Tracker window:** the camera image is mirrored, so moving your head left moves it left on screen,
+  and the hints say "move to your left/right". `--no-mirror` shows the raw camera image. Data
+  coordinates are never mirrored.
 
 - **API:** serves Open Gaze API v2.8 on port 4242. Clients choose fields with `ENABLE_SEND_*`, stream
   `REC` records at 60 Hz, run calibration via `CALIBRATE_*` and receive `CAL` records. With

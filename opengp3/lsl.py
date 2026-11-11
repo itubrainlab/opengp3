@@ -2,7 +2,7 @@
 
 Two outlets (``opengp3 server`` publishes them by default):
 
-* **OpenGP3 Gaze** (type ``Gaze``, 60 Hz, float32): one sample per camera
+* **OpenGP3 Gaze** (type ``Gaze``, 60 Hz; GP3 HD 150 Hz, float32): one sample per camera
   frame; channel names follow the Open Gaze API fields (see ``CHANNELS``).
   Gaze positions are fractions of the tracked screen (0..1, top-left origin).
 * **OpenGP3 Markers** (type ``Markers``, irregular, string): user markers
@@ -71,9 +71,12 @@ class LSLStreamer:
         self.lsl, self.tracker = lsl, tracker
         if source_id is None:
             source_id = f"opengp3-{_serial(tracker) or 'gp3'}"
-        info = lsl.StreamInfo(f"{name} Gaze", "Gaze", len(CHANNELS), 60.0, "float32", source_id)
+        cam = getattr(tracker, "camera", None)
+        rate = float(getattr(cam, "rate", 60.0))
+        info = lsl.StreamInfo(f"{name} Gaze", "Gaze", len(CHANNELS), rate, "float32", source_id)
         desc = info.desc()
-        desc.append_child_value("manufacturer", "OpenGP3 (Gazepoint GP3 hardware)")
+        desc.append_child_value("manufacturer",
+                                f"OpenGP3 (Gazepoint {getattr(cam, 'model', 'GP3')} hardware)")
         ch = desc.append_child("channels")
         for label, unit, d in CHANNELS:
             c = ch.append_child("channel")
@@ -147,6 +150,8 @@ def sample_values(s: GazeSample, tracker: GazeTracker) -> list[float]:
 
 def _serial(tracker: GazeTracker) -> str:
     cam = tracker.camera
+    if isinstance(getattr(cam, "serial", None), str):  # GP3 HD: from the camera's bootstrap registers
+        return cam.serial
     try:
         import usb.util
         return usb.util.get_string(cam.dev, cam.dev.iSerialNumber) if cam is not None and cam.dev else ""

@@ -1,5 +1,5 @@
 """OpenGP3: a cross-platform (macOS, Linux, Windows) user-space driver, gaze
-tracker and Open Gaze API server for the Gazepoint GP3 eye tracker.
+tracker and Open Gaze API server for the Gazepoint GP3 and GP3 HD eye trackers.
 
 High level::
 
@@ -10,18 +10,20 @@ High level::
         gt.calibrate(points=9)              # fullscreen calibration
         print(gt.validate().report())       # accuracy in degrees
         gt.calibration.save("cal.json")
-        for s in gt.gaze(duration=10):      # every frame, ~60 Hz
+        for s in gt.gaze(duration=10):      # every frame, ~60 Hz (GP3 HD: 150 Hz)
             if s.valid:
                 print(s.x, s.y)             # screen points
 
-Low level: ``GP3Camera`` (registers, frames, IR LEDs), ``detect_eyes`` and
+Low level: ``open_camera()`` returns a ``GP3Camera`` or ``GP3HDCamera`` (frames,
+features, IR LEDs); ``detect_eyes`` and
 ``EyeTracker`` (pupil/glint features per frame).
 """
-__version__ = "0.3.0"  # defined first: submodules import it
+__version__ = "0.4.0"  # defined first: submodules import it
 
 from .calibration import (VALIDATION_POINTS, Calibration, CalibrationError, Mapping,
                           ValidationResult, grid_points)
-from .camera import GP3Camera, GP3Error, GP3NotFoundError, LibUSBNotFoundError
+from .camera import GP3Camera, GP3Error, GP3NotFoundError, LibUSBNotFoundError, open_camera
+from .u3v import GP3HDCamera
 from .detection import EyeFeature, EyeTracker, detect_eyes
 from .display import Cancelled, StimulusWindow
 from .filters import OneEuroFilter
@@ -35,7 +37,7 @@ from .tracker import CalibrationRun, GazeSample, GazeTracker
 __all__ = [
     "GazeTracker", "GazeSample", "Screen", "Rect", "Calibration", "CalibrationError",
     "ValidationResult", "Mapping", "grid_points", "VALIDATION_POINTS", "OneEuroFilter",
-    "GP3Camera", "GP3Error", "GP3NotFoundError", "LibUSBNotFoundError",
+    "GP3Camera", "GP3HDCamera", "open_camera", "GP3Error", "GP3NotFoundError", "LibUSBNotFoundError",
     "EyeFeature", "EyeTracker", "detect_eyes", "StimulusWindow", "Cancelled",
     "OpenGazeServer", "OpenGazeClient", "CalibrationRun", "FixationFilter", "Fixation",
     "BlinkDetector", "BlinkInfo", "MovingAverage", "EyeModel", "EyeMetrics", "MarkerTracker",

@@ -69,7 +69,7 @@ def _cluster(glints, max_dist=25.0):
     return groups
 
 
-def _fit_pupil(img: np.ndarray, sx: float, sy: float, roi_r: int = 60):
+def _fit_pupil(img: np.ndarray, sx: float, sy: float, roi_r: int = 60, glint_level: int = 140):
     """Segment the dark pupil around the glints and fit an ellipse.
 
     Sweeps a threshold upward from the darkest pixel near the glints and
@@ -85,7 +85,7 @@ def _fit_pupil(img: np.ndarray, sx: float, sy: float, roi_r: int = 60):
     # Inpaint glints (+ their ~2px bloom halo) from the surrounding pixels.
     # Painting them with a flat dark value instead creates a glint-shaped blob
     # that becomes the "pupil" when the pupil is small, locking pupil to glint.
-    gl = cv2.dilate((roi >= 140).astype(np.uint8),
+    gl = cv2.dilate((roi >= glint_level).astype(np.uint8),
                     cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
     roi = cv2.inpaint(roi, gl, 5, cv2.INPAINT_TELEA)
     roi = cv2.GaussianBlur(roi, (5, 5), 0)
@@ -114,6 +114,10 @@ def _fit_pupil(img: np.ndarray, sx: float, sy: float, roi_r: int = 60):
             continue
         if bx == 0 or by == 0 or bx + bw >= rw or by + bh >= rh:
             break  # leaked out of the ROI: larger thresholds only get worse
+        if best is not None and area > 4 * best[3]:
+            # the region jumped from the pupil to the whole (dark) iris: its
+            # boundary with the sclera can out-score the pupil edge (GP3 HD)
+            break
         cnts, _ = cv2.findContours((lab == lid).astype(np.uint8),
                                    cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
         c = max(cnts, key=cv2.contourArea)[:, 0, :]

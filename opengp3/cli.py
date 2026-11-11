@@ -27,7 +27,7 @@ import cv2
 import numpy as np
 
 from .calibration import Calibration, CalibrationError, ValidationResult
-from .camera import GP3Camera, GP3Error
+from .camera import GP3Error, open_camera
 from .detection import EyeTracker, detect_eyes
 from .display import Cancelled
 from .screen import Screen
@@ -35,11 +35,13 @@ from .tracker import GazeTracker
 
 
 # ------------------------------------------------------------------ camera
-def _configure(cam: GP3Camera, a):
+def _configure(cam, a):
     if a.crop:
         cam.set_video_mode(mode=5, rate=a.rate)  # 640x480 centre crop
     else:
-        cam.set_full_sensor()  # 752x480, widest field of view
+        cam.set_full_sensor()  # GP3: 752x480, widest field of view; GP3 HD: whole sensor
+    if a.hz and hasattr(cam, "set_rate"):
+        cam.set_rate(a.hz)
     if a.shutter is not None:
         cam.set_feature("shutter", a.shutter)
     if a.gain is not None:
@@ -49,8 +51,43 @@ def _configure(cam: GP3Camera, a):
 
 
 def cmd_info(a):
-    with GP3Camera.open() as cam:
+    with open_camera() as cam:
         print(json.dumps(cam.info(), indent=2, default=str))
+
+
+def cmd_probe_leds(a):
+    """GP3 HD: switch each camera output line on (both polarities) and
+    measure the image brightness; the lines that brighten it drive the IR
+    illuminators (the GP3 HD has two banks)."""
+    from .u3v import CONFIG_PATH, GP3HDCamera, led_lines_from_probe, save_led_config
+    with GP3HDCamera.open() as cam:
+        cam.set_full_sensor()
+        cam.start_stream()
+        print("measuring image brightness per output line (keep the camera's view still)...")
+        results = cam.probe_leds()
+        for line, inv, b in results:
+            label = "all off" if line == "off" else f"{line}{' inverted' if inv else ''}"
+            print(f"  {label:<18} mean brightness {b:6.1f}")
+        lines, inv = led_lines_from_probe(results)
+        if not lines:
+            print("no output line made the image clearly brighter: IR LEDs not found")
+            return
+        print(f"IR LEDs: {', '.join(lines)}{' (inverted)' if inv else ''}")
+        # a bank next to the lens gives a bright pupil the detector can't use:
+        # with a face in view, keep the combination that tracks best
+        print("checking eye detection per LED combination (look at the screen)...")
+        best, counts = cam.choose_led_lines(lines, inv)
+        for combo, k in counts.items():
+            print(f"  {', '.join(combo):<14} both eyes found in {k} of 60 frames")
+        if best:
+            lines = list(best)
+            print(f"using {', '.join(lines)} (dark pupil)")
+        else:
+            print("no eyes found with any combination: sit in front of the tracker and run "
+                  "this again; saving all LED lines")
+        if not a.no_save:
+            save_led_config(lines, inv)
+            print(f"saved to {CONFIG_PATH}")
 
 
 def cmd_view(a):
@@ -59,7 +96,7 @@ def cmd_view(a):
     slow drawing never costs tracking frames."""
     from .control import render_tracker_view
     gt = GazeTracker(Screen(1, 1), smoothing=False, input_monitor=False,
-                     full_sensor=not a.crop)
+                     full_sensor=not a.crop, rate_hz=a.hz)
     with gt:
         cam = gt.camera
         if a.shutter is not None:
@@ -68,7 +105,7 @@ def cmd_view(a):
             cam.set_feature("gain", a.gain)
         if a.no_leds:
             cam.set_leds(False)
-        win = "GP3 (q / Esc / close to quit)"
+        win = f"{gt.model} (q / Esc / close to quit)"
         last_frame, shown, t0, disp_fps = -1, 0, time.time(), 0.0
         seq0, t_cam = None, time.time()
         try:
@@ -104,7 +141,7 @@ def cmd_view(a):
 
 
 def cmd_snapshot(a):
-    with GP3Camera.open() as cam:
+    with open_camera() as cam:
         _configure(cam, a)
         for _ in range(10):  # let exposure settle
             _, _, img = cam.grab()
@@ -113,9 +150,13 @@ def cmd_snapshot(a):
 
 
 def cmd_record(a):
-    with GP3Camera.open() as cam:
+    with open_camera() as cam:
         _configure(cam, a)
         tracker = EyeTracker()
+        from .brightdark import BrightDarkDetector
+        bright_dark = (BrightDarkDetector() if getattr(cam, "illumination", "dark") == "bright-dark"
+                       else None)
+        find = bright_dark.update if bright_dark is not None else detect_eyes
         i, seq = 0, 0
         t_end = time.time() + a.duration if a.duration else float("inf")
         with open(a.output, "w", newline="") as fh:
@@ -126,7 +167,7 @@ def cmd_record(a):
             try:
                 while time.time() < t_end:
                     seq, t, img = cam.grab()
-                    for side, e in sorted(tracker.update(detect_eyes(img)).items()):
+                    for side, e in sorted(tracker.update(find(img)).items()):
                         wr.writerow([f"{t:.4f}", seq, side, f"{e.pupil_x:.2f}", f"{e.pupil_y:.2f}",
                                      f"{e.pupil_r:.2f}", f"{e.glint_x:.2f}", f"{e.glint_y:.2f}",
                                      f"{e.pcr[0]:.3f}", f"{e.pcr[1]:.3f}", f"{e.confidence:.2f}"])
@@ -208,7 +249,7 @@ def dump_samples(gt: GazeTracker, path: str):
 
 def cmd_calibrate(a):
     screen = _screen(a)
-    with GazeTracker(screen, max_diagonal_in=_max_diag(a)) as gt:
+    with GazeTracker(screen, max_diagonal_in=_max_diag(a), rate_hz=a.hz) as gt:
         _report_area(gt, _area(a, screen))
         try:
             cal = gt.calibrate(points=a.points, area=_area(a, screen))
@@ -233,7 +274,7 @@ def cmd_calibrate(a):
 def cmd_validate(a):
     cal = Calibration.load(a.calibration)
     screen = _screen(a)
-    with GazeTracker(screen, calibration=cal) as gt:
+    with GazeTracker(screen, calibration=cal, rate_hz=a.hz) as gt:
         res = gt.validate()
         print(res.report())
         if a.plot:
@@ -244,7 +285,7 @@ def cmd_validate(a):
 def cmd_track(a):
     cal = Calibration.load(a.calibration)
     screen = _screen(a)
-    with GazeTracker(screen, calibration=cal, smoothing=not a.raw) as gt:
+    with GazeTracker(screen, calibration=cal, smoothing=not a.raw, rate_hz=a.hz) as gt:
         gt.gaze_pointer = a.pointer
         if a.show:
             if a.csv:
@@ -319,7 +360,7 @@ def cmd_server(a):
         except Exception as e:
             print(f"could not load calibration {src}: {e}")
     gt = GazeTracker(screen, calibration=cal, monocular=a.monocular, auto_gain=a.auto_gain,
-                     aac_length=a.aac_filter, max_diagonal_in=_max_diag(a))
+                     aac_length=a.aac_filter, max_diagonal_in=_max_diag(a), rate_hz=a.hz)
     from .calibration import API_DEFAULT_POINTS, NINE_POINTS
     with gt:
         _report_area(gt)
@@ -330,15 +371,31 @@ def cmd_server(a):
             try:
                 from .lsl import LSLStreamer
                 lsl = LSLStreamer(gt)
-                print("LSL streams: 'OpenGP3 Gaze' (60 Hz) and 'OpenGP3 Markers'", flush=True)
+                print(f"LSL streams: 'OpenGP3 Gaze' ({gt.rate:.0f} Hz) and 'OpenGP3 Markers'", flush=True)
             except Exception as e:  # e.g. liblsl unavailable: keep serving the API
                 print(f"LSL streaming disabled: {e}", flush=True)
+        print(f"{gt.model} at {gt.rate:.0f} Hz, {gt.image_size[0]}x{gt.image_size[1]}", flush=True)
         print(f"Open Gaze API server listening on {a.host}:{srv.port}  "
               f"(screen {screen.width}x{screen.height}"
               + (f", {screen.width_cm:.1f} cm" if screen.width_cm else "") + ")", flush=True)
         try:
-            ControlApp(gt, srv, show_tracker=not a.no_display, media_dir=a.media,
-                       mirror=not a.no_mirror, lsl=lsl).loop()
+            qt = not a.opencv_ui
+            if qt:
+                try:
+                    from .gui import _import_qt
+                    _import_qt()
+                except ImportError:
+                    print("PySide6 is not installed: using the basic OpenCV windows "
+                          "(pip install PySide6 for the control app)", flush=True)
+                    qt = False
+            if qt:
+                from .gui import run_app
+                run_app(gt, srv, lsl=lsl, media_dir=a.media, mirror=not a.no_mirror,
+                        show_tracker=not a.no_display,
+                        screen_args={"display": a.display})
+            else:
+                ControlApp(gt, srv, show_tracker=not a.no_display, media_dir=a.media,
+                           mirror=not a.no_mirror, lsl=lsl).loop()
         except KeyboardInterrupt:
             pass
         finally:
@@ -378,13 +435,16 @@ def cmd_setup(a):
 
 # ------------------------------------------------------------------ main
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="opengp3", description="Gazepoint GP3 driver and gaze tracker")
+    p = argparse.ArgumentParser(
+        prog="opengp3", description="Gazepoint GP3 / GP3 HD driver and gaze tracker. Without a "
+        "command, runs 'server': the Open Gaze API server with its control window.")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def cam_opts(s):
         s.add_argument("--crop", action="store_true",
                        help="640x480 centre crop instead of the full 752x480 sensor")
-        s.add_argument("--rate", type=int, default=5, help="IIDC rate code with --crop (4=30, 5=60 fps)")
+        s.add_argument("--rate", type=int, default=5, help="GP3: IIDC rate code with --crop (4=30, 5=60 fps)")
+        s.add_argument("--hz", type=float, help="GP3 HD frame rate: 60 or 150 (default 150)")
         s.add_argument("--shutter", type=int)
         s.add_argument("--gain", type=int)
         s.add_argument("--no-leds", action="store_true", help="leave the IR illuminators off")
@@ -394,6 +454,7 @@ def main(argv=None):
                        help="physical screen width (default: as reported by the OS)")
         s.add_argument("--distance-cm", type=float, default=65.0, help="eye-screen distance")
         s.add_argument("--display", type=int, default=0, help="display index (0 = main)")
+        s.add_argument("--hz", type=float, help="GP3 HD frame rate: 60 or 150 (default 150)")
 
     def area_opts(s):
         s.add_argument("--points", type=int, default=9, choices=[5, 9, 13, 16, 25])
@@ -405,6 +466,9 @@ def main(argv=None):
         s.add_argument("--area-aspect", default="16:9")
 
     sub.add_parser("info", help="camera registers and modes").set_defaults(fn=cmd_info)
+    s = sub.add_parser("probe-leds", help="GP3 HD: find and save which camera output drives the IR LEDs")
+    s.add_argument("--no-save", action="store_true", help="only print the results")
+    s.set_defaults(fn=cmd_probe_leds)
     s = sub.add_parser("view", help="live IR view with eye overlay"); cam_opts(s); s.set_defaults(fn=cmd_view)
     s = sub.add_parser("snapshot", help="save one frame"); s.add_argument("output"); cam_opts(s)
     s.set_defaults(fn=cmd_snapshot)
@@ -460,6 +524,8 @@ def main(argv=None):
                    help="don't stream gaze and markers on Lab Streaming Layer (on by default)")
     s.add_argument("--lsl", action="store_true", help=argparse.SUPPRESS)  # old flag, now the default
     s.add_argument("--no-mirror", action="store_true", help="show the camera image unmirrored")
+    s.add_argument("--opencv-ui", action="store_true",
+                   help="basic OpenCV windows with keyboard controls instead of the Qt control app")
     s.set_defaults(fn=cmd_server)
 
     s = sub.add_parser("marker", help="printable marker for real-world pupil size")
@@ -474,6 +540,11 @@ def main(argv=None):
         s.add_argument("--force", action="store_true", help="reinstall the rule")
         s.set_defaults(fn=cmd_setup)
 
+    # the server (with its control window) is the default: "opengp3" alone, or
+    # "opengp3 --port 4243" etc., runs "opengp3 server ..."
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or (argv[0].startswith("-") and argv[0] not in ("-h", "--help")):
+        argv.insert(0, "server")
     a = p.parse_args(argv)
 
     try:

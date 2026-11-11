@@ -6,7 +6,8 @@ both eyes are ``ipd_mm`` apart in reality and ``d`` pixels apart in the image,
 so Z = focal_px * ipd / d. With one eye visible the last depth is kept.
 
 Defaults: ``ipd_mm`` = 63 (adult average); ``focal_px`` = 2750, estimated for
-this unit's lens from images at a known distance. Absolute values (mm, metres)
+the GP3's lens from images at a known distance (the GP3 HD's camera sets its
+own, ``GP3HDCamera.focal_px``, which ``GazeTracker`` applies). Absolute values (mm, metres)
 are therefore approximate (about +-10 %, mostly from individual IPD); relative
 changes (pupil dilation, depth changes) are accurate. Supply the subject's IPD,
 or measure it with a printed marker (``MarkerTracker``), for better values.

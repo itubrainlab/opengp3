@@ -17,6 +17,7 @@ dependencies = [
     "numpy>=1.24",
     "opencv-python>=4.8",
     "pylsl>=1.16",
+    "PySide6>=6.5",   # the control app (opengp3 server); the library works without it
 ]
 keywords = ["eye tracking", "gaze", "gazepoint", "gp3", "libusb", "open gaze api", "calibration"]
 classifiers = [

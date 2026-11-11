@@ -310,7 +310,11 @@ class OpenGazeServer:
         if ident == "CAMERA_SIZE":
             return ack(("WIDTH", tr.image_size[0]), ("HEIGHT", tr.image_size[1]))
         if ident == "PRODUCT_ID":
-            return ack(("VALUE", self.product), ("BUS", "USB2"), ("RATE", "60"))
+            cam = tr.camera
+            model = getattr(cam, "model", "GP3")
+            product = self.product if self.product != "GP3" else model.replace(" ", "")
+            return ack(("VALUE", product), ("BUS", getattr(cam, "bus", "USB2")),
+                       ("RATE", f"{getattr(cam, 'rate', 60.0):.0f}"))
         if ident == "SERIAL_ID":
             return ack(("VALUE", self._serial()))
         if ident == "COMPANY_ID":
@@ -341,12 +345,8 @@ class OpenGazeServer:
         return nack
 
     def _serial(self) -> str:
-        cam = self.tracker.camera
-        try:
-            import usb.util
-            return usb.util.get_string(cam.dev, cam.dev.iSerialNumber) if cam else ""
-        except Exception:
-            return ""
+        from .lsl import _serial
+        return _serial(self.tracker)
 
     # ----------------------------------------------------------- calibration
     def calibration_listener(self, event: str, n: int, fx: float, fy: float):

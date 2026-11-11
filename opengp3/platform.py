@@ -106,6 +106,8 @@ class _MacBackend(_Backend):
         cg.CGDisplayScreenSize.restype = _CGSize
         cg.CGDisplayScreenSize.argtypes = [ctypes.c_uint32]
         cg.CGMainDisplayID.restype = ctypes.c_uint32
+        cg.CGDisplayPixelsWide.restype = cg.CGDisplayPixelsHigh.restype = ctypes.c_size_t
+        cg.CGDisplayPixelsWide.argtypes = cg.CGDisplayPixelsHigh.argtypes = [ctypes.c_uint32]
         cg.CGWarpMouseCursorPosition.argtypes = [_CGPoint]
         cg.CGAssociateMouseAndMouseCursorPosition.argtypes = [ctypes.c_bool]
         self.cg, self.cf = cg, cf
@@ -119,9 +121,12 @@ class _MacBackend(_Backend):
         out = []
         for i in range(n.value):
             r = self.cg.CGDisplayBounds(ids[i])
-            mm = self.cg.CGDisplayScreenSize(ids[i]).width
+            size = self.cg.CGDisplayScreenSize(ids[i])  # mm, from EDID (72 dpi guess without)
+            px_w = self.cg.CGDisplayPixelsWide(ids[i]) or r.size.width
+            px_h = self.cg.CGDisplayPixelsHigh(ids[i]) or r.size.height
+            mm = plausible_width_mm(size.width, px_w, px_h, size.height, dpi_guess=72)
             out.append(Display(int(ids[i]), r.origin.x, r.origin.y, r.size.width, r.size.height,
-                               ids[i] == main, mm or None))
+                               ids[i] == main, mm))
         return sorted(out, key=lambda d: not d.main)
 
     def mouse_position(self):
@@ -147,6 +152,71 @@ class _MacBackend(_Backend):
 
 
 # ===================================================================== Windows
+def plausible_width_mm(width_mm, width_px=None, height_px=None, height_mm=None,
+                       dpi_guess: float | None = None) -> float | None:
+    """``width_mm`` if it looks like a real monitor size, else None.
+
+    Rejects sizes OSes report when they don't know: 0, the EDID "aspect ratio
+    instead of size" placeholders (16x9 / 16x10 cm), a size computed from an
+    assumed DPI (macOS uses 72 dpi without EDID), widths outside 10 cm-5 m,
+    and physical aspect ratios that don't match the pixels."""
+    if not width_mm:
+        return None
+    w = float(width_mm)
+    if not 100 <= w <= 5000:
+        return None
+    if height_mm and (round(w), round(float(height_mm))) in ((160, 90), (160, 100), (1600, 900)):
+        return None
+    if dpi_guess and width_px and abs(w - width_px / dpi_guess * 25.4) < 1.0:
+        return None
+    if height_mm and width_px and height_px:
+        r = (w / float(height_mm)) / (width_px / height_px)
+        if not 0.8 <= r <= 1.25:
+            return None
+    return w
+
+
+def linux_edid_widths(drm_dir: str = "/sys/class/drm") -> dict[str, float]:
+    """Physical widths (mm) of connected monitors from their EDID in sysfs,
+    by connector name as X11 names outputs ("DP-1", "HDMI-1", "eDP-1"). Works
+    without X11 (e.g. under Wayland)."""
+    out: dict[str, float] = {}
+    try:
+        entries = sorted(os.listdir(drm_dir))
+    except OSError:
+        return out
+    for name in entries:
+        if "-" not in name:
+            continue
+        base = os.path.join(drm_dir, name)
+        try:
+            with open(os.path.join(base, "status")) as fh:
+                if fh.read().strip() != "connected":
+                    continue
+            with open(os.path.join(base, "edid"), "rb") as fh:
+                w = edid_width_mm(fh.read())
+        except OSError:
+            continue
+        if w:
+            conn = name.split("-", 1)[1]                     # card0-HDMI-A-1 -> HDMI-A-1
+            out[conn] = w
+            out.setdefault(conn.replace("-A-", "-"), w)     # X11: HDMI-1
+    return out
+
+
+def edid_width_mm(edid: bytes) -> float | None:
+    """Image width (mm) from an EDID block: the first detailed timing
+    descriptor's size in mm, else the basic display parameters' size in cm
+    (some monitors leave the descriptor's size at 0)."""
+    if len(edid) < 128 or edid[:8] != b"\x00\xff\xff\xff\xff\xff\xff\x00":
+        return None
+    if edid[54] or edid[55]:  # first 18-byte descriptor is a detailed timing
+        mm = edid[66] | ((edid[68] & 0xF0) << 4)
+        if mm:
+            return float(mm)
+    return float(edid[21] * 10) if edid[21] else None
+
+
 class _WinBackend(_Backend):
     VK = {**{0x41 + i: c for i, c in enumerate("ABCDEFGHIJKLMNOPQRSTUVWXYZ")},
           **{0x30 + i: str(i) for i in range(10)},
@@ -173,25 +243,60 @@ class _WinBackend(_Backend):
     def displays(self):
         wt = self.wt
 
-        class MONITORINFO(ctypes.Structure):
+        class MONITORINFOEXW(ctypes.Structure):
             _fields_ = [("cbSize", wt.DWORD), ("rcMonitor", wt.RECT), ("rcWork", wt.RECT),
-                        ("dwFlags", wt.DWORD)]
+                        ("dwFlags", wt.DWORD), ("szDevice", wt.WCHAR * 32)]
 
         out = []
         proc_t = ctypes.WINFUNCTYPE(wt.BOOL, wt.HMONITOR, wt.HDC, ctypes.POINTER(wt.RECT),
                                     wt.LPARAM)
 
         def cb(hmon, hdc, rect, data):
-            mi = MONITORINFO()
-            mi.cbSize = ctypes.sizeof(MONITORINFO)
+            mi = MONITORINFOEXW()
+            mi.cbSize = ctypes.sizeof(MONITORINFOEXW)
             self.u32.GetMonitorInfoW(hmon, ctypes.byref(mi))
             r = mi.rcMonitor
             out.append(Display(int(hmon or 0), r.left, r.top, r.right - r.left, r.bottom - r.top,
-                               bool(mi.dwFlags & 1)))
+                               bool(mi.dwFlags & 1), self._width_mm(mi.szDevice)))
             return True
 
         self.u32.EnumDisplayMonitors(None, None, proc_t(cb), 0)
         return sorted(out, key=lambda d: not d.main)
+
+    def _width_mm(self, adapter: str) -> float | None:
+        """Physical width of the monitor on display adapter output ``adapter``
+        (e.g. \\\\.\\DISPLAY1), from its EDID in the registry. Windows' own
+        GetDeviceCaps(HORZSIZE) is unreliable with DPI scaling."""
+        wt = self.wt
+
+        class DISPLAY_DEVICEW(ctypes.Structure):
+            _fields_ = [("cb", wt.DWORD), ("DeviceName", wt.WCHAR * 32),
+                        ("DeviceString", wt.WCHAR * 128), ("StateFlags", wt.DWORD),
+                        ("DeviceID", wt.WCHAR * 128), ("DeviceKey", wt.WCHAR * 128)]
+
+        try:
+            import winreg
+            i = 0
+            while True:
+                dd = DISPLAY_DEVICEW()
+                dd.cb = ctypes.sizeof(DISPLAY_DEVICEW)
+                # EDD_GET_DEVICE_INTERFACE_NAME: DeviceID = \\?\DISPLAY#<model>#<instance>#{guid}
+                if not self.u32.EnumDisplayDevicesW(adapter, i, ctypes.byref(dd), 1):
+                    return None
+                i += 1
+                if not dd.StateFlags & 1:  # DISPLAY_DEVICE_ACTIVE
+                    continue
+                parts = dd.DeviceID.split("#")
+                if len(parts) < 3:
+                    continue
+                key = rf"SYSTEM\CurrentControlSet\Enum\DISPLAY\{parts[1]}\{parts[2]}\Device Parameters"
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as k:
+                    edid, _ = winreg.QueryValueEx(k, "EDID")
+                w = plausible_width_mm(edid_width_mm(bytes(edid)))
+                if w:
+                    return w
+        except Exception:
+            return None
 
     def mouse_position(self):
         p = self.wt.POINT()
@@ -251,7 +356,9 @@ class _X11Backend(_Backend):
             [ctypes.c_int] * 2 + [ctypes.c_uint] * 2 + [ctypes.c_int] * 2
         x.XFlush.argtypes = [ctypes.c_void_p]
         x.XDisplayWidth.argtypes = x.XDisplayHeight.argtypes = [ctypes.c_void_p, ctypes.c_int]
-        x.XDisplayWidthMM.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        x.XDisplayWidthMM.argtypes = x.XDisplayHeightMM.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        x.XGetAtomName.restype = ctypes.c_char_p
+        x.XGetAtomName.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
         self.x, self.d = x, d
         self.root = x.XDefaultRootWindow(d)
         self.lock = threading.Lock()
@@ -268,19 +375,32 @@ class _X11Backend(_Backend):
         self.available = True
 
     def displays(self):
+        edid = linux_edid_widths()  # fallback when X reports no/placeholder sizes
         with self.lock:
             if self.xr is not None:
                 n = ctypes.c_int()
                 mons = self.xr.XRRGetMonitors(self.d, self.root, 1, ctypes.byref(n))
                 if mons and n.value:
-                    out = [Display(i, m.x, m.y, m.width, m.height, bool(m.primary), m.mwidth or None)
-                           for i, m in enumerate(mons[k] for k in range(n.value))]
+                    out = []
+                    for i in range(n.value):
+                        m = mons[i]
+                        mm = plausible_width_mm(m.mwidth, m.width, m.height, m.mheight)
+                        if mm is None:
+                            name = self.x.XGetAtomName(self.d, m.name) if m.name else None
+                            mm = edid.get(name.decode()) if name else None
+                            if mm is None and n.value == 1 and len(set(edid.values())) == 1:
+                                mm = next(iter(edid.values()))
+                        out.append(Display(i, m.x, m.y, m.width, m.height, bool(m.primary), mm))
                     self.xr.XRRFreeMonitors(mons)
                     if not any(d.main for d in out):
                         out[0] = Display(*[*out[0].__dict__.values()][:5], True, out[0].width_mm)
                     return sorted(out, key=lambda d: not d.main)
-            return [Display(0, 0, 0, self.x.XDisplayWidth(self.d, 0), self.x.XDisplayHeight(self.d, 0),
-                            True, self.x.XDisplayWidthMM(self.d, 0) or None)]
+            w, h = self.x.XDisplayWidth(self.d, 0), self.x.XDisplayHeight(self.d, 0)
+            mm = plausible_width_mm(self.x.XDisplayWidthMM(self.d, 0), w, h,
+                                    self.x.XDisplayHeightMM(self.d, 0))
+            if mm is None and len(set(edid.values())) == 1:
+                mm = next(iter(edid.values()))
+            return [Display(0, 0, 0, w, h, True, mm)]
 
     def _pointer(self):
         rr, cr = ctypes.c_ulong(), ctypes.c_ulong()

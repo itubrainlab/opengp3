@@ -48,6 +48,9 @@ class Screen:
         from .platform import displays
         ds = displays()
         if ds:
+            if not 0 <= display < len(ds):
+                raise ValueError(f"display {display} not found: {len(ds)} display(s), numbered "
+                                 f"0-{len(ds) - 1} (0 = main)")
             d = ds[display]
             if width_cm is None and d.width_mm:  # physical size reported by the OS
                 width_cm = round(d.width_mm / 10, 1)
@@ -55,6 +58,12 @@ class Screen:
         if display:
             raise ValueError("display selection is not available on this system")
         w, h = _main_display_size()
+        if width_cm is None and sys.platform.startswith("linux"):
+            # no X11 display list (e.g. Wayland): the EDID in sysfs, if unambiguous
+            from .platform import linux_edid_widths
+            widths = set(linux_edid_widths().values())
+            if len(widths) == 1:
+                width_cm = round(widths.pop() / 10, 1)
         return cls(w, h, width_cm, distance_cm)
 
     def to_global(self, x: float, y: float) -> tuple[float, float]:

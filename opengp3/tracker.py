@@ -6,7 +6,7 @@
         gt.calibrate()                      # fullscreen 9-point calibration
         print(gt.validate().report())       # optional accuracy check
         gt.calibration.save("cal.json")
-        for s in gt.gaze(duration=10):      # every frame, 60 Hz
+        for s in gt.gaze(duration=10):      # every frame, 60 Hz (GP3 HD: 150 Hz)
             if s.valid:
                 print(s.t, s.x, s.y, s.fixation.valid)
 """
@@ -25,7 +25,8 @@ import numpy as np
 from .calibration import (VALIDATION_POINTS, Calibration, CalibrationError,
                           CalibrationSample, ValidationResult, evaluate, grid_points,
                           presentation_order)
-from .camera import GP3Camera
+from .camera import GP3Camera, open_camera
+from .brightdark import BrightDarkDetector, PupilGainControl
 from .detection import EyeFeature, EyeTracker, detect_eyes
 from .display import Cancelled, StimulusWindow
 from .events import BlinkDetector, BlinkInfo, Fixation, FixationFilter, MovingAverage
@@ -249,6 +250,8 @@ class GazeTracker:
     and maps eyes to screen coordinates once calibrated.
 
     screen:      the display gaze is reported on (default: main display).
+    display:     alternatively, the display's number in ``opengp3.platform.displays()``
+                 (0 = main); ``set_display()`` changes it later.
                  Set ``width_cm``/``distance_cm`` for results in degrees.
     calibration: a saved Calibration (``Calibration.load(path)``), optional.
     smoothing:   One-Euro filter on ``x``/``y``; ``raw_x``/``raw_y`` stay raw.
@@ -261,14 +264,20 @@ class GazeTracker:
                  GP3's specified maximum). None = always the whole screen.
     input_monitor: record mouse position/buttons and keystrokes with each sample.
     aac_length:  moving-average window (samples) of the AAC / pointer gaze.
+    rate_hz:     GP3 HD frame rate, 60 or 150 (default 150). Ignored by the GP3 (60 Hz).
     """
 
     def __init__(self, screen: Screen | None = None, calibration: Calibration | None = None,
                  smoothing: bool | OneEuroFilter = True, camera: GP3Camera | None = None,
                  full_sensor: bool = True, monocular: str | None = None,
                  auto_gain: bool = False, input_monitor: bool = True, aac_length: int = 15,
-                 fixation_radius_deg: float = 1.0, max_diagonal_in: float | None = 22.0):
-        self.screen = screen or Screen.detect()
+                 fixation_radius_deg: float = 1.0, max_diagonal_in: float | None = 22.0,
+                 rate_hz: float | None = None, display: int | None = None):
+        if screen is None:
+            screen = Screen.detect(display=display or 0)
+        elif display is not None:
+            raise ValueError("pass either screen or display, not both")
+        self.screen = screen
         #: calibration/validation targets stay within a centred area of this
         #: diagonal (GP3 specification: screens up to 22"); None = whole screen
         self.max_diagonal_in = max_diagonal_in
@@ -292,6 +301,9 @@ class GazeTracker:
         self._cam = camera
         self._own_cam = camera is None
         self._full_sensor = full_sensor
+        #: GP3 HD frame rate (60 or 150 Hz; None = the camera default, 150).
+        #: The GP3 always runs at 60 Hz.
+        self.rate_hz = rate_hz
         self._thread = None
         self._running = threading.Event()
         self._lock = threading.Lock()
@@ -299,6 +311,7 @@ class GazeTracker:
         self._callbacks: list[Callable[[GazeSample], None]] = []
         self._latest: GazeSample | None = None
         self._latest_image: np.ndarray | None = None
+        self._image_sample: GazeSample | None = None
         self._t0 = time.time()
         self.image_size = (752, 480)
         self.dropped_frames = 0
@@ -324,13 +337,17 @@ class GazeTracker:
         if self._thread:
             return self
         if self._cam is None:
-            self._cam = GP3Camera.open()
+            self._cam = open_camera()
         if self._full_sensor:
             self._cam.set_full_sensor()
         else:
             self._cam.set_video_mode(5, 5)
+        if self.rate_hz and hasattr(self._cam, "set_rate"):
+            self._cam.set_rate(self.rate_hz)
         self.image_size = (self._cam.width, self._cam.height)
         self.eye_model.w, self.eye_model.h = self.image_size
+        # each tracker model has its own lens/sensor: focal length in pixels
+        self.eye_model.focal_px = getattr(self._cam, "focal_px", self.eye_model.focal_px)
         self._cam.set_leds(True)
         self._cam.start_stream()
         self._t0 = time.time()
@@ -343,8 +360,12 @@ class GazeTracker:
         """The session's fullscreen stimulus window (created on first use and
         reused, so calibration and validation share identical geometry)."""
         if self._win is None:
-            self._win = StimulusWindow(self.screen, "OpenGP3")
+            self._win = self.window_factory(self.screen, "OpenGP3")
         return self._win
+
+    #: creates the stimulus window: (screen, title) -> StimulusWindow-like.
+    #: The Qt control app replaces it with a Qt window (opengp3.qtwindow).
+    window_factory = StimulusWindow
 
     def close_window(self):
         if self._win is not None:
@@ -373,25 +394,50 @@ class GazeTracker:
     def camera(self) -> GP3Camera | None:
         return self._cam
 
+    @property
+    def model(self) -> str:
+        """Eye tracker model: "GP3" or "GP3 HD"."""
+        return getattr(self._cam, "model", "GP3")
+
+    @property
+    def rate(self) -> float:
+        """Nominal camera frame rate (Hz)."""
+        return float(getattr(self._cam, "rate", 60.0))
+
     def latest_image(self) -> np.ndarray | None:
         """Most recent camera frame (for display)."""
         with self._lock:
             return self._latest_image
 
     def latest_frame(self) -> tuple[np.ndarray | None, GazeSample | None]:
-        """Most recent camera frame together with its own tracking result."""
+        """Most recent camera frame for display, together with its own tracking
+        result. With the GP3 HD's alternating illumination these are the
+        dark-pupil frames only, so a display doesn't flicker."""
         with self._lock:
-            return self._latest_image, self._latest
+            return self._latest_image, self._image_sample
 
     # ------------------------------------------------------------- pipeline
-    def _detect(self, img, eye_tracker):
+    def _detect(self, img, eye_tracker, bright_dark=None):
+        max_eyes = 1 if self.monocular else 2
+        if bright_dark is not None:
+            bright_dark.max_eyes = max_eyes
+            found = bright_dark.update(img)
+        else:
+            found = detect_eyes(img, max_eyes=max_eyes)
         if self.monocular:
-            found = detect_eyes(img, max_eyes=1)
             return {self.monocular: found[0]} if found else {}
-        return eye_tracker.update(detect_eyes(img))
+        return eye_tracker.update(found)
+
+    @property
+    def illumination(self) -> str:
+        """"bright-dark" (GP3 HD, Gazepoint's alternating LED banks: detected
+        with ``BrightDarkDetector``) or "dark" (dark pupil, ``detect_eyes``)."""
+        return getattr(self._cam, "illumination", "dark")
 
     def _process(self):
         eye_tracker = EyeTracker()
+        bright_dark = BrightDarkDetector() if self.illumination == "bright-dark" else None
+        pupil_gain = PupilGainControl(self._cam) if bright_dark is not None else None
         last_seq = 0
         gain = _GainSweep(self)
         fps_t, fps_n = time.time(), 0
@@ -409,13 +455,19 @@ class GazeTracker:
             fps_n += 1
             if t - fps_t >= 1.0:
                 self.fps, fps_t, fps_n = fps_n / (t - fps_t), t, 0
-            eyes = self._detect(img, eye_tracker)
+            eyes = self._detect(img, eye_tracker, bright_dark)
+            if pupil_gain is not None and not self.auto_gain:
+                pupil_gain.update(bright_dark, t)
             s = self._enrich(GazeSample(t, seq, eyes, time=t - self._t0, tick=cv2.getTickCount()),
                              img)
             if self.auto_gain:
                 gain.update(t, bool(eyes))
             with self._lock:
-                self._latest, self._latest_image = s, img  # image and its result together
+                self._latest = s
+                # display frames: with the GP3 HD's alternating illumination only the
+                # dark-pupil frames (50 Hz), else the view flickers between frame types
+                if bright_dark is None or bright_dark.last_kind == "D":
+                    self._latest_image, self._image_sample = img, s  # image + its own result
                 subs, cbs = list(self._subs), list(self._callbacks)
             for q in subs:
                 try:
@@ -518,10 +570,22 @@ class GazeTracker:
         self.aac.set_length(n)
 
     def set_screen(self, screen: Screen):
-        """Change the tracked screen (needs recalibration)."""
+        """Change the tracked screen (needs recalibration): gaze is reported in
+        its coordinates, and calibration, validation and the gaze demo run on
+        it."""
         self.screen = screen
         self.close_window()
         self.fixation_filter.aspect = screen.width / screen.height
+
+    def set_display(self, display: int, width_cm: float | None = None,
+                    distance_cm: float | None = None) -> Screen:
+        """Track and calibrate on display number ``display`` (an index into
+        ``opengp3.platform.displays()``, 0 = main display), with its physical
+        width from the OS unless ``width_cm`` is given. Returns the new Screen."""
+        scr = Screen.detect(width_cm=width_cm, display=display,
+                            distance_cm=distance_cm or self.screen.distance_cm)
+        self.set_screen(scr)
+        return scr
 
     def enable_marker(self, size_mm: float | None):
         """Track a printed ArUco marker of ``size_mm`` (None = off)."""

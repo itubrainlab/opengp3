@@ -3,7 +3,7 @@
 Linux only lets normal users read raw USB device files; libusb needs write
 access to control the GP3 camera. OpenGP3 fixes this automatically the first
 time it hits the permission error: it installs a udev rule granting access to
-the GP3 (VID 1e10, PID 2001) and re-applies the rules to the plugged-in
+Gazepoint's cameras (VID 1e10: the GP3 and the GP3 HD) and re-applies the rules to the plugged-in
 device. This needs administrator rights once per machine: a graphical
 password prompt (pkexec) in a desktop session, or sudo in a terminal.
 
@@ -18,9 +18,8 @@ import subprocess
 import sys
 
 RULE_PATH = "/etc/udev/rules.d/60-opengp3.rules"
-RULE = ('# OpenGP3: user access to the Gazepoint GP3 camera (Point Grey Firefly MV)\n'
-        'SUBSYSTEM=="usb", ATTR{idVendor}=="1e10", ATTR{idProduct}=="2001", '
-        'MODE="0666", TAG+="uaccess"\n')
+RULE = ('# OpenGP3: user access to the Gazepoint GP3 / GP3 HD cameras (Point Grey / FLIR)\n'
+        'SUBSYSTEM=="usb", ATTR{idVendor}=="1e10", MODE="0666", TAG+="uaccess"\n')
 
 # Runs as root. The rule text is a constant passed as an argument ($1), so no
 # user-controlled data reaches the shell.
@@ -41,7 +40,9 @@ def needed() -> bool:
 def rule_installed() -> bool:
     try:
         with open(RULE_PATH) as fh:
-            return 'ATTR{idVendor}=="1e10"' in fh.read()
+            text = fh.read()
+        # rules written before GP3 HD support matched the GP3's product ID only
+        return 'ATTR{idVendor}=="1e10"' in text and "idProduct" not in text
     except OSError:
         return False
 

@@ -48,6 +48,9 @@ PIDS = {
     0x2004: "Chameleon Color",
     0x2005: "Chameleon Mono",
 }
+#: USB3 Vision cameras (the GP3 HD's Chameleon3 is 0x3300); detected by
+#: interface class, so other PIDs work too
+U3V_PIDS = {0x3300: "Point Grey USB3 Vision camera (Gazepoint GP3 HD)"}
 
 CONFIG_ROM_BASE = 0xFFFF_F000_0000
 DEFAULT_CMD_BASE = 0xFFFF_F0F0_0000
@@ -87,10 +90,63 @@ FORMAT0_MODES = {
 FRAMERATES = {0: 1.875, 1: 3.75, 2: 7.5, 3: 15, 4: 30, 5: 60, 6: 120, 7: 240}
 
 
+LIBUSB_OPTION_USE_USBDK = 1
+USBDK_URL = "https://github.com/daynix/UsbDk/releases"
+
+
+def usbdk_installed() -> bool:
+    """True on Windows when the UsbDk driver is installed. libusb loads its
+    helper DLL from the system directory only."""
+    if sys.platform != "win32":
+        return False
+    sysdir = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+    return (os.path.exists(os.path.join(sysdir, "UsbDkHelper.dll"))
+            and os.path.exists(os.path.join(sysdir, "drivers", "UsbDk.sys")))
+
+
+def _usbdk_wanted() -> bool:
+    """OPENGP3_USBDK=0 disables UsbDk; otherwise it is used when installed."""
+    if os.environ.get("OPENGP3_USBDK", "").strip().lower() in ("0", "false", "no"):
+        return False
+    return usbdk_installed()
+
+
+#: Windows USB access in use: "usbdk" or "winusb" (set by _libusb_backend)
+usb_driver = "winusb" if sys.platform == "win32" else "native"
+
+
+def _enable_usbdk(be) -> bool:
+    """Switch a fresh libusb context to the UsbDk backend. UsbDk leaves the
+    camera's own driver installed (so Gazepoint Control keeps working) and
+    takes the device over only while OpenGP3 has it open."""
+    global usb_driver
+    if getattr(be, "_opengp3_usbdk", None) is not None:
+        return be._opengp3_usbdk
+    ok = False
+    if _usbdk_wanted():
+        try:
+            import ctypes
+            ok = be.lib.libusb_set_option(be.ctx, ctypes.c_int(LIBUSB_OPTION_USE_USBDK)) == 0
+        except Exception:
+            ok = False
+    be._opengp3_usbdk = ok
+    if ok:
+        usb_driver = "usbdk"
+    return ok
+
+
 def _libusb_backend():
     """Locate libusb-1.0: the copy bundled with the ``libusb-package`` wheel
     (Windows, macOS, Linux), else a system install (Homebrew/MacPorts paths
-    aren't on the default dyld search path of python.org / venv interpreters)."""
+    aren't on the default dyld search path of python.org / venv interpreters).
+    On Windows, the UsbDk backend is selected when UsbDk is installed."""
+    be = _find_libusb()
+    if sys.platform == "win32":
+        _enable_usbdk(be)
+    return be
+
+
+def _find_libusb():
     import usb.backend.libusb1 as lb
     try:
         import libusb_package
@@ -115,18 +171,161 @@ def _libusb_backend():
 class _NoPermission(Exception):
     """Device found but the OS refused access (EACCES)."""
 
+    def __init__(self, model: str = "GP3"):
+        super().__init__(model)
+        self.model = model
 
-def _access_help() -> str:
+
+def _access_help(model: str = "GP3") -> str:
     """OS-specific hint when the device exists but cannot be opened."""
     if sys.platform.startswith("linux"):
         return ("on Linux, run 'opengp3 setup' once (installs a udev rule; asks for the "
                 "administrator password)")
     if sys.platform == "win32":
-        return ("on Windows, libusb needs the WinUSB driver on the GP3 camera: install it with "
-                "Zadig (https://zadig.akeo.ie, device 'USB 2.0 Digital Imaging Camera', "
-                "1E10 2001). Note: Gazepoint Control then cannot use the camera until its "
-                "driver is restored")
-    return "close other programs using the GP3"
+        if usb_driver == "usbdk":
+            return (f"UsbDk could not take over the {model}: close Gazepoint Control and other "
+                    "programs using it, then unplug and replug it")
+        if model == "GP3 HD":
+            zadig = ("in Zadig (https://zadig.akeo.ie) enable Options > List All Devices, untick "
+                     "'Ignore Hubs or Composite Parents', select the composite device with USB ID "
+                     "1E10 3300 and install WinUSB")
+        else:
+            zadig = ("install WinUSB on 'USB 2.0 Digital Imaging Camera' (1E10 2001) with Zadig "
+                     "(https://zadig.akeo.ie)")
+        return ("on Windows, install UsbDk once (" + USBDK_URL + ", the x64 .msi): it lets "
+                f"OpenGP3 use the {model} without replacing Gazepoint's driver, so Gazepoint "
+                f"Control keeps working. Alternatively {zadig}; Gazepoint Control then cannot "
+                "use the camera until its driver is restored")
+    return f"close other programs using the {model}"
+
+
+#: UsbDk returns a closed camera to its own driver by re-enumerating it,
+#: which takes the GP3 HD off the bus for ~17 s: opening waits this long
+USBDK_REAPPEAR_S = 30.0
+
+
+def _wait_for_device(opener):
+    """``opener()``, retried while the camera is missing under UsbDk (it may
+    still be re-enumerating after the previous program closed it)."""
+    try:
+        return opener()
+    except GP3NotFoundError:
+        if usb_driver != "usbdk":
+            raise
+    print("waiting for the eye tracker to reappear on USB (UsbDk re-enumerates it after "
+          "each use)...", file=sys.stderr, flush=True)
+    t_end = time.time() + USBDK_REAPPEAR_S
+    while True:
+        time.sleep(0.25)
+        try:
+            return opener()
+        except GP3NotFoundError:
+            if time.time() > t_end:
+                raise
+
+
+def _open_with_setup(opener, auto_setup: bool | None = None):
+    """Run ``opener()``. On Linux, if access is denied and the udev rule is
+    missing, install the rule (one administrator password prompt per machine)
+    and retry. ``auto_setup=False`` or OPENGP3_NO_AUTO_SETUP=1 disables this.
+    Under UsbDk, waits for a camera that is still re-enumerating."""
+    try:
+        return _wait_for_device(opener)
+    except _NoPermission as e:
+        if not sys.platform.startswith("linux"):
+            raise GP3Error(f"no permission to open the {e.model}: {_access_help(e.model)}") from e
+        from . import permissions
+        if auto_setup is None:
+            auto_setup = permissions.auto_setup_enabled()
+        if permissions.rule_installed():
+            raise GP3Error(f"no permission to open the {e.model} although the udev rule is "
+                           "installed: unplug and replug it") from e
+        if not auto_setup:
+            raise GP3Error(f"no permission to open the {e.model}.\n"
+                           + permissions.manual_instructions()) from e
+        try:
+            permissions.install()
+        except permissions.SetupError as se:
+            raise GP3Error(str(se)) from e
+        # udev applies the new permissions asynchronously: retry briefly
+        t_end = time.time() + 5.0
+        while True:
+            try:
+                return opener()
+            except _NoPermission as e2:
+                if time.time() > t_end:
+                    raise GP3Error("udev rule installed, but access is still denied: unplug "
+                                   "and replug the eye tracker") from e2
+                time.sleep(0.3)
+
+
+def prepare_device(dev, model: str = "GP3"):
+    """Detach kernel drivers (Linux) and select configuration 1, mapping
+    permission errors to _NoPermission and a busy or vanished device to
+    GP3NotFoundError."""
+    if sys.platform.startswith("linux"):
+        try:  # vendor-specific devices: normally no kernel driver, but be safe
+            for n in range(4):
+                if dev.is_kernel_driver_active(n):
+                    dev.detach_kernel_driver(n)
+        except usb.core.USBError as e:
+            if e.errno == 13:
+                usb.util.dispose_resources(dev)
+                raise _NoPermission(model) from e
+        except (NotImplementedError, ValueError):
+            pass
+    try:
+        if dev.get_active_configuration() is None:
+            dev.set_configuration(1)
+    except usb.core.USBError as e:
+        if e.errno == 13:  # EACCES
+            usb.util.dispose_resources(dev)
+            raise _NoPermission(model) from e
+        try:
+            dev.set_configuration(1)
+        except usb.core.USBError as e2:
+            if e2.errno == 19:
+                raise GP3NotFoundError(
+                    f"{model} disappeared or is held by another process "
+                    "(close other OpenGP3 programs)") from e2
+            if e2.errno == 13:
+                usb.util.dispose_resources(dev)
+                raise _NoPermission(model) from e2
+            if e2.errno not in (16, None):
+                raise GP3Error(f"cannot open the {model} ({e2}): {_access_help(model)}") from e2
+    except NotImplementedError as e:  # Windows without WinUSB driver
+        raise GP3Error(f"cannot access the {model}: {_access_help(model)}") from e
+
+
+def is_u3v(dev) -> bool:
+    """True for a USB3 Vision device (the GP3 HD's camera): it has a control
+    interface of class 0xEF (miscellaneous), subclass 0x05 (USB3 Vision)."""
+    try:
+        for cfg in dev:
+            for intf in cfg:
+                if intf.bInterfaceClass == 0xEF and intf.bInterfaceSubClass == 0x05:
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def open_camera(auto_setup: bool | None = None):
+    """Open the first Gazepoint camera on the USB bus: a GP3 (``GP3Camera``)
+    or a GP3 HD (``GP3HDCamera``). Both have the same interface."""
+    def opener():
+        backend = _libusb_backend()
+        devs = list(usb.core.find(find_all=True, idVendor=VID, backend=backend) or ())
+        for dev in devs:
+            if is_u3v(dev):
+                from .u3v import GP3HDCamera
+                return GP3HDCamera._open_device(dev)
+        for dev in devs:
+            if dev.idProduct in PIDS:
+                return GP3Camera._open_device(dev)
+        raise GP3NotFoundError("no GP3 or GP3 HD found on USB (VID 0x1e10). "
+                               "Is it plugged in, and not in use by another program?")
+    return _open_with_setup(opener, auto_setup)
 
 
 def _bit(value: int, n: int) -> bool:
@@ -134,7 +333,84 @@ def _bit(value: int, n: int) -> bool:
     return bool(value & (0x8000_0000 >> n))
 
 
-class GP3Camera:
+class FrameStream:
+    """Threaded frame stream shared by the GP3 and GP3 HD drivers.
+
+    The cameras drop a frame if no bulk transfer is pending when they start
+    sending, so a reader thread keeps a read in flight back-to-back and the
+    consumer pulls frames from a queue. Subclasses provide ``start()``,
+    ``stop()`` and ``_read_frame()``."""
+
+    #: nominal frame rate (Hz)
+    rate: float = 60.0
+
+    def _reader(self):
+        while not self._stop_evt.is_set():
+            try:
+                img = self._read_frame()
+            except (usb.core.USBError, GP3Error) as e:
+                if self._stop_evt.is_set():
+                    break
+                self._err = e
+                time.sleep(0.005)
+                continue
+            ts = time.time()
+            # advance by the camera's own frame counter where it has one (GP3 HD),
+            # so frames lost on the way show as sequence gaps
+            fid = getattr(self, "_frame_id", None)
+            step = 1
+            if fid is not None and self._last_fid is not None and fid > self._last_fid:
+                step = fid - self._last_fid
+            self._last_fid = fid
+            self._seq += step
+            try:
+                self._q.put_nowait((self._seq, ts, img))
+            except queue.Full:  # consumer too slow: drop oldest
+                try:
+                    self._q.get_nowait()
+                except queue.Empty:
+                    pass
+                self._q.put_nowait((self._seq, ts, img))
+
+    def start_stream(self, buffer_frames: int = 120):
+        self._q = queue.Queue(maxsize=buffer_frames)
+        self._stop_evt = threading.Event()
+        self._seq, self._err, self._last_fid = 0, None, None
+        self.start()
+        self._thread = threading.Thread(target=self._reader, daemon=True)
+        self._thread.start()
+
+    def stop_stream(self):
+        if getattr(self, "_thread", None):
+            self._stop_evt.set()
+            self.stop()
+            self._thread.join(timeout=2)
+            self._thread = None
+
+    def grab(self, timeout_s: float = 2.0, latest: bool = False
+             ) -> tuple[int, float, np.ndarray]:
+        """Return (frame_seq, host_timestamp, (h, w) uint8 image).
+
+        latest=False: next frame in order (every frame; use for recording,
+            consumer must keep up with 60 fps or frames queue up).
+        latest=True: newest frame, discarding older queued ones (use for
+            live display / interactive loops slower than 60 fps, otherwise
+            they run up to `buffer_frames` behind real time).
+        frame_seq gaps mean frames were skipped or dropped."""
+        try:
+            item = self._q.get(timeout=timeout_s)
+        except queue.Empty:
+            raise TimeoutError(f"no frame from {getattr(self, 'model', 'camera')} ({self._err})")
+        if latest:
+            while True:
+                try:
+                    item = self._q.get_nowait()
+                except queue.Empty:
+                    break
+        return item
+
+
+class GP3Camera(FrameStream):
     """Direct access to the GP3 camera: registers, video modes, IR LEDs and a
     threaded 60 fps frame stream.
 
@@ -147,6 +423,10 @@ class GP3Camera:
         seq, t, img = cam.grab()   # (480, 752) uint8
         cam.close()
     """
+
+    model = "GP3"
+    bus = "USB2"
+    rate = 60.0
 
     def __init__(self, dev: usb.core.Device):
         self.dev = dev
@@ -164,77 +444,24 @@ class GP3Camera:
         machine) and opening is retried. ``auto_setup=False`` or the
         environment variable OPENGP3_NO_AUTO_SETUP=1 disables this.
         """
-        try:
-            return cls._open()
-        except _NoPermission as e:
-            if not sys.platform.startswith("linux"):
-                raise GP3Error(f"no permission to open the GP3: {_access_help()}") from e
-            from . import permissions
-            if auto_setup is None:
-                auto_setup = permissions.auto_setup_enabled()
-            if permissions.rule_installed():
-                raise GP3Error("no permission to open the GP3 although the udev rule is installed: "
-                               "unplug and replug the GP3") from e
-            if not auto_setup:
-                raise GP3Error("no permission to open the GP3.\n"
-                               + permissions.manual_instructions()) from e
-            try:
-                permissions.install()
-            except permissions.SetupError as se:
-                raise GP3Error(str(se)) from e
-            # udev applies the new permissions asynchronously: retry briefly
-            t_end = time.time() + 5.0
-            while True:
-                try:
-                    return cls._open()
-                except _NoPermission as e2:
-                    if time.time() > t_end:
-                        raise GP3Error("udev rule installed, but access is still denied: unplug "
-                                       "and replug the GP3") from e2
-                    time.sleep(0.3)
+        return _open_with_setup(cls._open, auto_setup)
 
     @classmethod
     def _open(cls) -> "GP3Camera":
         backend = _libusb_backend()
         for pid in PIDS:
             dev = usb.core.find(idVendor=VID, idProduct=pid, backend=backend)
-            if dev is not None:
+            if dev is not None and not is_u3v(dev):
                 break
         else:
             raise GP3NotFoundError("GP3 / Firefly MV not found on USB (VID 0x1e10). "
                                    "Is it plugged in, and not in use by another program?")
+        return cls._open_device(dev)
+
+    @classmethod
+    def _open_device(cls, dev) -> "GP3Camera":
+        prepare_device(dev, "GP3")
         cam = cls(dev)
-        if sys.platform.startswith("linux"):
-            try:  # vendor-specific device: normally no kernel driver, but be safe
-                if dev.is_kernel_driver_active(0):
-                    dev.detach_kernel_driver(0)
-            except usb.core.USBError as e:
-                if e.errno == 13:
-                    usb.util.dispose_resources(dev)
-                    raise _NoPermission() from e
-            except NotImplementedError:
-                pass
-        try:
-            if dev.get_active_configuration() is None:
-                dev.set_configuration(1)
-        except usb.core.USBError as e:
-            if e.errno == 13:  # EACCES
-                usb.util.dispose_resources(dev)
-                raise _NoPermission() from e
-            try:
-                dev.set_configuration(1)
-            except usb.core.USBError as e2:
-                if e2.errno == 19:
-                    raise GP3NotFoundError(
-                        "GP3 disappeared or is held by another process "
-                        "(close other OpenGP3 programs)") from e2
-                if e2.errno == 13:
-                    usb.util.dispose_resources(dev)
-                    raise _NoPermission() from e2
-                if e2.errno not in (16, None):
-                    raise GP3Error(f"cannot open the GP3 ({e2}): {_access_help()}") from e2
-        except NotImplementedError as e:  # Windows without WinUSB driver
-            raise GP3Error(f"cannot access the GP3: {_access_help()}") from e
         cam._parse_config_rom()
         return cam
 
@@ -426,70 +653,11 @@ class GP3Camera:
             buf += self.dev.read(BULK_EP, n - len(buf), timeout=timeout_ms)
         return np.frombuffer(bytes(buf), np.uint8).reshape(self.height, self.width)
 
-    # The Firefly MV drops a frame if no bulk transfer is pending when it
-    # starts sending, so a reader thread keeps a read in flight back-to-back
-    # and the consumer pulls frames from a queue.
-    def _reader(self):
-        while not self._stop_evt.is_set():
-            try:
-                img = self._read_frame()
-            except usb.core.USBError as e:
-                if self._stop_evt.is_set():
-                    break
-                self._err = e
-                continue
-            ts = time.time()
-            self._seq += 1
-            try:
-                self._q.put_nowait((self._seq, ts, img))
-            except queue.Full:  # consumer too slow: drop oldest
-                try:
-                    self._q.get_nowait()
-                except queue.Empty:
-                    pass
-                self._q.put_nowait((self._seq, ts, img))
-
-    def start_stream(self, buffer_frames: int = 120):
-        self._q = queue.Queue(maxsize=buffer_frames)
-        self._stop_evt = threading.Event()
-        self._seq, self._err = 0, None
-        self.start()
-        self._thread = threading.Thread(target=self._reader, daemon=True)
-        self._thread.start()
-
-    def stop_stream(self):
-        if getattr(self, "_thread", None):
-            self._stop_evt.set()
-            self.stop()
-            self._thread.join(timeout=2)
-            self._thread = None
-
-    def grab(self, timeout_s: float = 2.0, latest: bool = False
-             ) -> tuple[int, float, np.ndarray]:
-        """Return (frame_seq, host_timestamp, (h, w) uint8 image).
-
-        latest=False: next frame in order (every frame; use for recording,
-            consumer must keep up with 60 fps or frames queue up).
-        latest=True: newest frame, discarding older queued ones (use for
-            live display / interactive loops slower than 60 fps, otherwise
-            they run up to `buffer_frames` behind real time).
-        frame_seq gaps mean frames were skipped or dropped."""
-        try:
-            item = self._q.get(timeout=timeout_s)
-        except queue.Empty:
-            raise TimeoutError(f"no frame from GP3 ({self._err})")
-        if latest:
-            while True:
-                try:
-                    item = self._q.get_nowait()
-                except queue.Empty:
-                    break
-        return item
-
     def info(self) -> dict:
         d = {
             "usb": f"{self.dev.idVendor:04x}:{self.dev.idProduct:04x} "
                    f"{PIDS.get(self.dev.idProduct, '?')}",
+            "usb_driver": usb_driver,
             "command_base": hex(self.cmd_base),
             "config_rom_quads": len(self.rom),
         }

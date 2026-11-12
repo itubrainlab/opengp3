@@ -18,6 +18,7 @@ Screen options (all gaze commands): --screen-width-cm (needed for degrees),
 from __future__ import annotations
 
 import argparse
+import os
 import csv
 import json
 import sys
@@ -90,12 +91,29 @@ def cmd_probe_leds(a):
             print(f"saved to {CONFIG_PATH}")
 
 
+def _simulated(a) -> bool:
+    return bool(getattr(a, "simulate", False)) or os.environ.get("OPENGP3_SIMULATE", "") in ("1", "true", "yes")
+
+
+def _tracker(a, *args, **kw) -> GazeTracker:
+    """GazeTracker on the real GP3, or on a simulated one with --simulate."""
+    if _simulated(a):
+        from .simulate import SimulatedCamera
+        cam = SimulatedCamera()
+        gt = GazeTracker(*args, camera=cam, **kw)
+        cam.attach(gt)
+        print("simulated GP3: the simulated person looks at your mouse cursor and follows "
+              "calibration targets", flush=True)
+        return gt
+    return GazeTracker(*args, **kw)
+
+
 def cmd_view(a):
     """Live camera view. Eye detection runs on every camera frame in the
     tracker's background thread; this loop only draws the newest frame, so
     slow drawing never costs tracking frames."""
     from .control import render_tracker_view
-    gt = GazeTracker(Screen(1, 1), smoothing=False, input_monitor=False,
+    gt = _tracker(a, Screen(1, 1), smoothing=False, input_monitor=False,
                      full_sensor=not a.crop, rate_hz=a.hz)
     with gt:
         cam = gt.camera
@@ -249,7 +267,7 @@ def dump_samples(gt: GazeTracker, path: str):
 
 def cmd_calibrate(a):
     screen = _screen(a)
-    with GazeTracker(screen, max_diagonal_in=_max_diag(a), rate_hz=a.hz) as gt:
+    with _tracker(a, screen, max_diagonal_in=_max_diag(a), rate_hz=a.hz) as gt:
         _report_area(gt, _area(a, screen))
         try:
             cal = gt.calibrate(points=a.points, area=_area(a, screen))
@@ -274,7 +292,7 @@ def cmd_calibrate(a):
 def cmd_validate(a):
     cal = Calibration.load(a.calibration)
     screen = _screen(a)
-    with GazeTracker(screen, calibration=cal, rate_hz=a.hz) as gt:
+    with _tracker(a, screen, calibration=cal, rate_hz=a.hz) as gt:
         res = gt.validate()
         print(res.report())
         if a.plot:
@@ -285,7 +303,7 @@ def cmd_validate(a):
 def cmd_track(a):
     cal = Calibration.load(a.calibration)
     screen = _screen(a)
-    with GazeTracker(screen, calibration=cal, smoothing=not a.raw, rate_hz=a.hz) as gt:
+    with _tracker(a, screen, calibration=cal, smoothing=not a.raw, rate_hz=a.hz) as gt:
         gt.gaze_pointer = a.pointer
         if a.show:
             if a.csv:
@@ -350,7 +368,7 @@ def cmd_server(a):
     from .control import ControlApp, default_calibration_path
     from .server import OpenGazeServer
     screen = _screen(a)
-    path = default_calibration_path()
+    path = default_calibration_path(_simulated(a))
     cal = None
     src = a.calibration or (str(path) if path.exists() else None)
     if src:
@@ -359,7 +377,7 @@ def cmd_server(a):
             print(f"loaded calibration {src}", flush=True)
         except Exception as e:
             print(f"could not load calibration {src}: {e}")
-    gt = GazeTracker(screen, calibration=cal, monocular=a.monocular, auto_gain=a.auto_gain,
+    gt = _tracker(a, screen, calibration=cal, monocular=a.monocular, auto_gain=a.auto_gain,
                      aac_length=a.aac_filter, max_diagonal_in=_max_diag(a), rate_hz=a.hz)
     from .calibration import API_DEFAULT_POINTS, NINE_POINTS
     with gt:
@@ -390,12 +408,12 @@ def cmd_server(a):
                     qt = False
             if qt:
                 from .gui import run_app
-                run_app(gt, srv, lsl=lsl, media_dir=a.media, mirror=not a.no_mirror,
+                run_app(gt, srv, lsl=lsl, media_dir=a.media, mirror=not a.no_mirror, save_path=path,
                         show_tracker=not a.no_display,
                         screen_args={"display": a.display})
             else:
                 ControlApp(gt, srv, show_tracker=not a.no_display, media_dir=a.media,
-                           mirror=not a.no_mirror, lsl=lsl).loop()
+                           mirror=not a.no_mirror, lsl=lsl, save_path=path).loop()
         except KeyboardInterrupt:
             pass
         finally:
@@ -441,6 +459,7 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def cam_opts(s):
+        s.add_argument("--simulate", action="store_true", help="no hardware: a simulated GP3")
         s.add_argument("--crop", action="store_true",
                        help="640x480 centre crop instead of the full 752x480 sensor")
         s.add_argument("--rate", type=int, default=5, help="GP3: IIDC rate code with --crop (4=30, 5=60 fps)")
@@ -450,6 +469,9 @@ def main(argv=None):
         s.add_argument("--no-leds", action="store_true", help="leave the IR illuminators off")
 
     def screen_opts(s):
+        s.add_argument("--simulate", action="store_true",
+                       help="no hardware: a simulated GP3 (the simulated person looks at the mouse "
+                            "cursor and follows calibration targets)")
         s.add_argument("--screen-width-cm", type=float,
                        help="physical screen width (default: as reported by the OS)")
         s.add_argument("--distance-cm", type=float, default=65.0, help="eye-screen distance")

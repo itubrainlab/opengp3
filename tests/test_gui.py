@@ -85,8 +85,11 @@ def test_calibrate_from_the_window_headless(app, window):
     assert w.run is None and gt.calibration is not None
     assert w.tbl.rowCount() == 5
     assert "5/5 points valid" in w.lb_cal.text()
-    assert all(e is not None and e < 60 for _, _, _, errs in point_errors(gt.calibration)
-               for e in errs.values())
+    # every point has a valid eye, and every valid eye's result is accurate (an
+    # eye may be invalid at a point if its pupil fits were rejected as misfits)
+    errors = point_errors(gt.calibration)
+    assert all(any(e is not None for e in errs.values()) for _, _, _, errs in errors)
+    assert all(e < 60 for _, _, _, errs in errors for e in errs.values() if e is not None)
     assert w.btn_cal.text() == "Calibrate" and w.btn_val.isEnabled()
     assert (w.save_path).exists()
     w.cb_pointer.setChecked(True)

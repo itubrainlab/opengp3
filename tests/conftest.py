@@ -79,7 +79,9 @@ class FakeCamera:
         if not self.eyes_open:
             return np.full((self.height, self.width), 150, np.uint8)
         fx, fy = self.look
-        dx, dy = self.gx * (fx - 0.5), self.gy * (fy - 0.5)   # PCR (pupil - glint)
+        # PCR (pupil - glint); glints slightly below the pupil centre, as with
+        # a real GP3 below the screen
+        dx, dy = self.gx * (fx - 0.5), self.gy * (fy - 0.5) - 1.5
         return synth_eye_image([(250 + dx, 240 + dy, dx, dy), (517 + dx, 238 + dy, dx, dy)],
                                seed=self._seq % 7)
 

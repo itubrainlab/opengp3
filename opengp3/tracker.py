@@ -94,6 +94,7 @@ class CalibrationRun:
         self.listener, self.sound, self.images = listener, sound, images or {}
         self.title = title
         self.queue = tracker.subscribe()
+        tracker.active_run = self  # lets e.g. the simulated camera see the current target
         self.order = (list(range(len(self.points))) if keep_order or len(self.points) <= 2
                       else presentation_order(self.points))
         self.windows: list[tuple[int, float, float, float, float]] = []  # idx, x, y, t0, t1
@@ -216,6 +217,8 @@ class CalibrationRun:
 
     def close(self):
         self.tracker.unsubscribe(self.queue)
+        if getattr(self.tracker, "active_run", None) is self:
+            self.tracker.active_run = None
 
 
 def _play(path: str | None = None):
@@ -435,7 +438,9 @@ class GazeTracker:
         return getattr(self._cam, "illumination", "dark")
 
     def _process(self):
-        eye_tracker = EyeTracker()
+        # pupil-size consistency check for dark-pupil (GP3) images only: the
+        # GP3 HD's bright/dark frames measure the pupil differently
+        eye_tracker = EyeTracker(size_check=self.illumination == "dark")
         bright_dark = BrightDarkDetector() if self.illumination == "bright-dark" else None
         pupil_gain = PupilGainControl(self._cam) if bright_dark is not None else None
         last_seq = 0

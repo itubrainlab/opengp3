@@ -31,8 +31,11 @@ from .tracker import GazeTracker, distance_label
 
 
 
-def default_calibration_path() -> Path:
-    return Path(os.environ.get("OPENGP3_HOME", Path.home() / ".opengp3")) / "calibration.json"
+def default_calibration_path(simulated: bool = False) -> Path:
+    """Where the last calibration is kept. Simulated runs use their own file
+    so they never overwrite the real tracker's calibration."""
+    name = "calibration-simulated.json" if simulated else "calibration.json"
+    return Path(os.environ.get("OPENGP3_HOME", Path.home() / ".opengp3")) / name
 
 
 def render_tracker_view(img: np.ndarray, sample, fps: float, lines=(), mirror: bool = False) -> np.ndarray:

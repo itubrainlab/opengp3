@@ -32,9 +32,9 @@ def test_no_eyes_in_empty_image():
 
 def test_eye_tracker_keeps_identity_with_one_eye():
     tr = EyeTracker()
-    both = detect_eyes(synth_eye_image([(260, 240, 0, 0), (520, 240, 0, 0)]))
+    both = detect_eyes(synth_eye_image([(260, 240, 0, -1.5), (520, 240, 0, -1.5)]))
     assert set(tr.update(both)) == {"R", "L"}
-    only_right_of_image = detect_eyes(synth_eye_image([(525, 241, 0, 0)]))
+    only_right_of_image = detect_eyes(synth_eye_image([(525, 241, 0, -1.5)]))
     assert set(tr.update(only_right_of_image)) == {"L"}   # subject's left eye
-    only_left_of_image = detect_eyes(synth_eye_image([(262, 239, 0, 0)]))
+    only_left_of_image = detect_eyes(synth_eye_image([(262, 239, 0, -1.5)]))
     assert set(tr.update(only_left_of_image)) == {"R"}

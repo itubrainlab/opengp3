@@ -201,10 +201,30 @@ class EyeTracker:
     sideways head movement.
     """
 
-    def __init__(self, max_jump: float = 0.45):
+    def __init__(self, max_jump: float = 0.45, size_check: bool = True):
         self.pos = {"R": None, "L": None}  # last pupil positions, image px
         self.offset = None                  # L - R pupil vector
         self.max_jump = max_jump            # fraction of eye spacing
+        # Pupil-size consistency: the pupil radius changes slowly, so a fit
+        # whose radius jumps far from the eye's recent value (e.g. a small dark
+        # pocket next to the glints instead of the whole pupil) is treated as
+        # "eye not seen" for that frame. A new size that persists is accepted.
+        self.size_check = size_check
+        self.radius = {"R": None, "L": None}
+        self._rejects = {"R": 0, "L": 0}
+        self._missing = {"R": 0, "L": 0}
+
+    def _consistent(self, side: str, e: EyeFeature, accept_after: int = 8,
+                    lo: float = 0.6, hi: float = 1.6) -> bool:
+        ref = self.radius[side]
+        if ref is not None and not lo * ref <= e.pupil_r <= hi * ref:
+            self._rejects[side] += 1
+            if self._rejects[side] < accept_after:
+                return False
+            ref = None  # persistent change: a genuinely different pupil size
+        self.radius[side] = e.pupil_r if ref is None else 0.9 * ref + 0.1 * e.pupil_r
+        self._rejects[side] = 0
+        return True
 
     def update(self, eyes: list[EyeFeature]) -> dict[str, EyeFeature]:
         out: dict[str, EyeFeature] = {}
@@ -230,6 +250,16 @@ class EyeTracker:
                 if np.hypot(*(p - pred[side])) <= self.max_jump * spacing:
                     out = {side: e}
             # no history / ambiguous: leave unlabelled rather than guess
+        if self.size_check:
+            for side in ("R", "L"):
+                if side not in out:
+                    self._missing[side] += 1
+                    if self._missing[side] > 30:  # gone ~0.5 s: forget its size
+                        self.radius[side] = None
+                    continue
+                self._missing[side] = 0
+                if not self._consistent(side, out[side]):
+                    del out[side]
         for side in ("R", "L"):
             if side in out:
                 self.pos[side] = np.array([out[side].pupil_x, out[side].pupil_y])

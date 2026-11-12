@@ -359,6 +359,36 @@ class GazeTracker:
         self._thread.start()
         return self
 
+    def switch_camera(self, camera, own: bool = True) -> "GazeTracker":
+        """Replace the camera while running (e.g. from the Control app's camera
+        selector): stops processing, closes the old camera (if owned), starts
+        on the new one. The calibration is cleared: gaze features differ
+        between cameras, so the caller loads the one that matches."""
+        was_running = self._thread is not None
+        self._running.clear()
+        if self._thread:
+            self._thread.join(timeout=3)
+            self._thread = None
+        if self._cam is not None and self._own_cam and self._cam is not camera:
+            try:
+                self._cam.close()
+            except Exception:
+                pass
+        self._cam, self._own_cam = camera, own
+        if hasattr(camera, "attach"):  # simulated camera: sees targets and the mouse
+            camera.attach(self)
+        self.calibration = self.previous_calibration = None
+        self.eye_model.reference_depth = None
+        self.fixation_filter.reset()
+        if self.filter:
+            self.filter.reset()
+        with self._lock:
+            self._latest = self._latest_image = self._image_sample = None
+        self.dropped_frames, self.fps = 0, 0.0
+        if was_running:
+            self.start()
+        return self
+
     def window(self) -> StimulusWindow:
         """The session's fullscreen stimulus window (created on first use and
         reused, so calibration and validation share identical geometry)."""

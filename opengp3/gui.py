@@ -89,7 +89,8 @@ def run_app(tracker: GazeTracker, server: OpenGazeServer, *, lsl=None, media_dir
 def _make_main_window():
     from PySide6.QtCore import Qt, QTimer
     from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
-    from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
+    from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDoubleSpinBox,
+                                   QFileDialog,
                                    QFormLayout, QGridLayout, QGroupBox, QHBoxLayout,
                                    QHeaderView, QLabel, QMainWindow, QPlainTextEdit, QPushButton,
                                    QScrollArea, QSizePolicy, QSpinBox, QTableWidget,
@@ -189,12 +190,8 @@ def _make_main_window():
             self.banner.setWordWrap(True)
             self.banner.setStyleSheet("background: #b00020; color: white; font-weight: bold; "
                                       "padding: 8px; border-radius: 4px;")
-            warning = self.gt.warning
-            self.banner.setText(f"⚠ {warning}" if warning else "")
-            self.banner.setVisible(bool(warning))
             left.addWidget(self.banner)
-            if warning:
-                self.setWindowTitle(self.windowTitle() + " - WEBCAM FALLBACK (low accuracy)")
+            self._update_warning()
             self.view = QLabel("starting camera...")
             self.view.setAlignment(Qt.AlignCenter)
             self.view.setMinimumSize(560, 448)
@@ -237,23 +234,23 @@ def _make_main_window():
         def _tracker_group(self):
             g = QGroupBox("Eye tracker")
             f = QFormLayout(g)
-            cam = self.gt.camera
-            serial = getattr(cam, "serial", None) or self.srv._serial()
-            self.lb_model = QLabel(f"{self.gt.model}" + (f"  (serial {serial})" if serial else ""))
+            # camera selector: Gazepoint tracker(s), webcams (fallback), simulated
+            self.cmb_camera = QComboBox()
+            self.cmb_camera.setToolTip("Webcam eye tracking is far less accurate than a "
+                                       "Gazepoint eye tracker")
+            self.cmb_camera.activated.connect(self._camera_selected)
+            f.addRow("Camera", self.cmb_camera)
+            self.lb_model = QLabel()
             f.addRow("Model", self.lb_model)
-            self.lb_camera = QLabel(f"{self.gt.image_size[0]} x {self.gt.image_size[1]}")
+            self.lb_camera = QLabel()
             f.addRow("Camera image", self.lb_camera)
             self.cmb_rate = QComboBox()
-            if hasattr(cam, "set_rate"):
-                self.cmb_rate.addItems(["60 Hz", "150 Hz"])
-                self.cmb_rate.setCurrentIndex(1 if self.gt.rate > 100 else 0)
-                self.cmb_rate.currentIndexChanged.connect(self._set_rate)
-            else:
-                self.cmb_rate.addItem("60 Hz")
-                self.cmb_rate.setEnabled(False)
+            self.cmb_rate.currentIndexChanged.connect(self._set_rate)
             f.addRow("Frame rate", self.cmb_rate)
-            illum = {"bright-dark": "bright/dark pupil (Gazepoint)", "dark": "dark pupil"}
-            f.addRow("Illumination", QLabel(illum.get(self.gt.illumination, self.gt.illumination)))
+            self.lb_illum = QLabel()
+            f.addRow("Illumination", self.lb_illum)
+            self._fill_cameras()
+            self._update_camera_info()
             self.lb_fps = QLabel("-")
             f.addRow("Tracking", self.lb_fps)
             self.lb_eyes = QLabel("-")
@@ -388,6 +385,92 @@ def _make_main_window():
             f.addRow("Calibration area", self.lb_area)
             self._update_area_label()
             return g
+
+        # ----------------------------------------------------- camera
+        def _fill_cameras(self):
+            from .sources import list_sources, source_of, webcam_tooltip
+            self.sources = list_sources()
+            self.cmb_camera.setToolTip(webcam_tooltip())
+            current = source_of(self.gt.camera)
+            self.cmb_camera.blockSignals(True)
+            self.cmb_camera.clear()
+            for i, src in enumerate(self.sources):
+                self.cmb_camera.addItem(src.label + ("" if src.available else f"  [{src.note}]"))
+                item = self.cmb_camera.model().item(i)
+                if item is not None and not src.available:
+                    item.setEnabled(False)
+                if src.key == current:
+                    self.cmb_camera.setCurrentIndex(i)
+            self.cmb_camera.blockSignals(False)
+
+        def _update_camera_info(self):
+            cam = self.gt.camera
+            serial = getattr(cam, "serial", None) or self.srv._serial()
+            self.lb_model.setText(f"{self.gt.model}" + (f"  (serial {serial})" if serial else ""))
+            self.lb_camera.setText(f"{self.gt.image_size[0]} x {self.gt.image_size[1]}")
+            self.cmb_rate.blockSignals(True)
+            self.cmb_rate.clear()
+            if getattr(cam, "model", "") == "GP3 HD" and hasattr(cam, "set_rate"):
+                self.cmb_rate.addItems(["60 Hz", "150 Hz"])
+                self.cmb_rate.setCurrentIndex(1 if self.gt.rate > 100 else 0)
+                self.cmb_rate.setEnabled(True)
+            else:
+                self.cmb_rate.addItem(f"{self.gt.rate:.0f} Hz")
+                self.cmb_rate.setEnabled(False)
+            self.cmb_rate.blockSignals(False)
+            illum = {"bright-dark": "bright/dark pupil (Gazepoint)", "dark": "dark pupil",
+                     "webcam": "none (webcam, visible light)"}
+            self.lb_illum.setText(illum.get(self.gt.illumination, self.gt.illumination))
+            self._update_warning()
+
+        def _update_warning(self):
+            warning = self.gt.warning
+            if not hasattr(self, "banner"):
+                return
+            self.banner.setText(f"⚠ {warning}" if warning else "")
+            self.banner.setVisible(bool(warning))
+            title = f"OpenGP3 Control - {self.gt.model}"
+            self.setWindowTitle(title + (" - WEBCAM FALLBACK (low accuracy)" if warning else ""))
+
+        def _camera_selected(self, i: int):
+            from .calibration import Calibration
+            from .control import default_calibration_path
+            from .sources import open_source, source_of
+            if i >= len(self.sources):
+                return
+            src = self.sources[i]
+            if src.key == source_of(self.gt.camera):
+                return
+            if self.run is not None or self._busy:
+                self._message("finish the calibration first")
+                self._fill_cameras()
+                return
+            self._message(f"opening {src.label}...")
+            QApplication.processEvents()
+            try:
+                cam = open_source(src)
+            except Exception as e:
+                self._message(f"could not open {src.label}: {e}")
+                self._fill_cameras()
+                return
+            self.gt.switch_camera(cam)
+            # this camera's own calibration (features differ between cameras)
+            self.save_path = default_calibration_path(src.kind == "simulated", src.kind == "webcam")
+            if self.save_path.exists():
+                try:
+                    cal = Calibration.load(str(self.save_path))
+                    self.gt.calibration = cal
+                    self.gt._apply_calibration_meta(cal)
+                except Exception:
+                    pass
+            if self.lsl is not None:  # LSL metadata (rate, warning) must match the camera
+                from .lsl import LSLStreamer
+                self.lsl.close()
+                self.lsl = LSLStreamer(self.gt)
+            self._update_camera_info()
+            self._refresh_calibration()
+            self._message(f"camera: {src.label}"
+                          + ("" if self.gt.calibration else " - not calibrated yet"))
 
         def _server_group(self):
             g = QGroupBox("Open Gaze API server")

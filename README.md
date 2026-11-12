@@ -100,7 +100,7 @@ The window (Qt) has the tracker display on the left and these panels on the righ
 | Panel | Contents |
 |---|---|
 | Tracker display | Camera image with pupils and glints, mirrored like a mirror (switchable), status and head hints; can be hidden (also via the API's `TRACKER_DISPLAY`) |
-| Eye tracker | Model and serial, camera image size, frame rate (GP3 HD: 60 / 150 Hz), illumination, samples/s and dropped frames, eyes found, **head position box** (eyes in the camera's view, green inside the safe zone, orange near the edge) and **distance scale** (good 55-75 cm) |
+| Eye tracker | **Camera selector**: the connected Gazepoint tracker, webcams (low-accuracy fallback, needs `opengp3[webcam]`) and a simulated GP3; switching restarts tracking and loads that camera's own calibration. Model and serial, camera image size, frame rate (GP3 HD: 60 / 150 Hz), illumination, samples/s and dropped frames, eyes found, **head position box** (eyes in the camera's view, green inside the safe zone, orange near the edge) and **distance scale** (good 55-75 cm) |
 | Calibration | Points (5, 9, 13, 16, 25), speed, tone per point, custom target images; **Calibrate** / Stop, **1-point** drift correction, **Undo** (toggle with the previous calibration), **Validate** (accuracy and precision report), **Show results**; summary per eye (points, model, error in px and degrees) and a table of every point's error per eye |
 | Gaze | Gaze pointer (mouse follows gaze), AAC filter length, both eyes / right only / left only, gain sweep, printed marker for pupil size in mm |
 | Screen | Display (with the OS-reported size), physical width, viewing distance, 22" calibration area on larger screens |

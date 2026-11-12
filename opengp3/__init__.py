@@ -18,7 +18,7 @@ Low level: ``open_camera()`` returns a ``GP3Camera`` or ``GP3HDCamera`` (frames,
 features, IR LEDs); ``detect_eyes`` and
 ``EyeTracker`` (pupil/glint features per frame).
 """
-__version__ = "0.4.0"  # defined first: submodules import it
+__version__ = "0.4.1"  # defined first: submodules import it
 
 from .calibration import (VALIDATION_POINTS, Calibration, CalibrationError, Mapping,
                           ValidationResult, grid_points)

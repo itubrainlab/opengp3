@@ -381,13 +381,38 @@ def _make_main_window():
         def _server_group(self):
             g = QGroupBox("Open Gaze API server")
             f = QFormLayout(g)
-            f.addRow("Address", QLabel(f"{self.srv.host}:{self.srv.port}"))
+            self.lb_address = QLabel()
+            self.lb_address.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            f.addRow("Connect to", self.lb_address)
+            self.cb_remote = QCheckBox("Allow connections from other computers")
+            self.cb_remote.setToolTip("The API has no password: anyone on these networks can "
+                                      "read gaze data and send commands")
+            self.cb_remote.setChecked(not self.srv.local_only)
+            self.cb_remote.toggled.connect(self._set_remote)
+            f.addRow("", self.cb_remote)
+            self._update_address()
             f.addRow("API version", QLabel(API_VERSION))
             self.lb_clients = QLabel("0")
             f.addRow("Clients", self.lb_clients)
             self.lb_lsl = QLabel("off" if self.lsl is None else "streaming")
             f.addRow("Lab Streaming Layer", self.lb_lsl)
             return g
+
+        def _update_address(self):
+            self.lb_address.setText("\n".join(self.srv.addresses()))
+
+        def _set_remote(self, remote: bool):
+            try:
+                self.srv.set_local_only(not remote)
+            except OSError as e:
+                self._message(f"could not change the API address: {e}")
+                self.cb_remote.blockSignals(True)
+                self.cb_remote.setChecked(not self.srv.local_only)
+                self.cb_remote.blockSignals(False)
+                return
+            self._update_address()
+            self._message("API reachable from other computers" if remote
+                          else "API restricted to this computer")
 
         # --------------------------------------------------------- actions
         def _message(self, text: str):
@@ -431,7 +456,10 @@ def _make_main_window():
             self.gt.enable_marker(self.srv.marker_mm if on else None)
 
         def _screen_changed(self, i: int):
-            d = self.displays[i] if i < len(self.displays) else None
+            # the item's data is the display number; the row index need not be
+            n = self.cmb_screen.itemData(i)
+            n = i if n is None else n
+            d = self.displays[n] if 0 <= n < len(self.displays) else None
             self.sp_width.setValue(d.width_mm / 10 if d is not None and d.width_mm else 0)
             self._apply_screen()
 

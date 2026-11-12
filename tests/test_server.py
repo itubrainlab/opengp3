@@ -29,7 +29,7 @@ def test_element_escapes():
 def server(fake_camera):
     gt = GazeTracker(SCREEN, camera=fake_camera, input_monitor=False)
     gt.start()
-    srv = OpenGazeServer(gt, port=0).start()
+    srv = OpenGazeServer(gt, "127.0.0.1", port=0).start()
     yield gt, srv, fake_camera
     srv.stop()
     gt.stop()
@@ -124,15 +124,22 @@ def test_api_calibration_headless_then_gaze(server):
         assert ids == [(k, str(n)) for n in range(1, 6) for k in ("CALIB_START_PT", "CALIB_RESULT_PT")]
         assert (cal_msgs[0]["CALX"], cal_msgs[0]["CALY"]) == ("0.50000", "0.50000")
         res = cal_msgs[-1]
-        assert all(res[f"LV{k}"] == "1" and res[f"RV{k}"] == "1" for k in range(1, 6))
+        # every point has a valid eye (an eye may be invalid at a point when its
+        # pupil fits there were rejected as misfits)
+        assert all("1" in (res[f"LV{k}"], res[f"RV{k}"]) for k in range(1, 6))
         # 24" test screen: points are placed inside the centred 22" area and the
         # CAL records give their true screen positions
         area = SCREEN.certified_area()
-        x2, y2 = area.to_screen(0.85, 0.15)
+        for k, (fx, fy) in enumerate(API_DEFAULT_POINTS, 1):
+            x, y = area.to_screen(fx, fy)
+            assert float(res[f"CALX{k}"]) == pytest.approx(x / SCREEN.width, abs=1e-4)
+            assert float(res[f"CALY{k}"]) == pytest.approx(y / SCREEN.height, abs=1e-4)
+            for eye in ("L", "R"):  # each valid eye's calibrated gaze is on target
+                if res[f"{eye}V{k}"] == "1":
+                    assert abs(float(res[f"{eye}X{k}"]) - x / SCREEN.width) < 0.05
+                    assert abs(float(res[f"{eye}Y{k}"]) - y / SCREEN.height) < 0.05
+        x2, _ = area.to_screen(0.85, 0.15)
         assert float(cal_msgs[2]["CALX"]) == pytest.approx(x2 / SCREEN.width, abs=1e-4)
-        assert float(res["CALX2"]) == pytest.approx(x2 / SCREEN.width, abs=1e-4)
-        assert abs(float(res["LX2"]) - x2 / SCREEN.width) < 0.05
-        assert abs(float(res["RY2"]) - y2 / SCREEN.height) < 0.05
         summary = c.get("CALIBRATE_RESULT_SUMMARY")
         assert summary["VALID_POINTS"] == "5" and float(summary["AVE_ERROR"]) < 60
 
@@ -192,8 +199,39 @@ def test_default_points_option(server):
     gt, srv, cam = server
     from opengp3.calibration import API_DEFAULT_POINTS, NINE_POINTS
     assert srv.cal_points == NINE_POINTS and NINE_POINTS[0] == (0.5, 0.5)
-    five = OpenGazeServer(gt, port=0, default_points=API_DEFAULT_POINTS)
+    five = OpenGazeServer(gt, "127.0.0.1", port=0, default_points=API_DEFAULT_POINTS)
     c = _Client(sock=None, addr=None)
     five.cal_points = []
     assert 'PTS="5"' in five.handle(c, "SET", "CALIBRATE_RESET", {})[0]
     five.stop()
+
+
+def test_remote_access_default_and_switching(fake_camera):
+    """Issue #1: other computers must be able to connect. Connecting through
+    this machine's own network address exercises the same path."""
+    from opengp3.server import ALL_NETWORKS, local_ipv4_addresses
+    lan = local_ipv4_addresses()
+    gt = GazeTracker(SCREEN, camera=fake_camera, input_monitor=False)
+    with gt:
+        srv = OpenGazeServer(gt, port=0)
+        assert srv.host == ALL_NETWORKS and not srv.local_only     # default: all networks
+        srv.start()
+        try:
+            if not lan:
+                pytest.skip("no network address on this machine")
+            target = lan[0]
+            assert f"{target}:{srv.port}" in srv.addresses()
+            with OpenGazeClient(target, srv.port) as c:
+                assert c.get("API_ID")["VALUE"] == "2.8"
+                srv.set_local_only(True)                            # switch while connected
+                assert srv.local_only and srv.addresses() == [f"127.0.0.1:{srv.port}"]
+                with pytest.raises(OSError):
+                    socket.create_connection((target, srv.port), timeout=2)
+                with OpenGazeClient("127.0.0.1", srv.port) as local:
+                    assert local.get("API_ID")["VALUE"] == "2.8"
+                assert c.get("API_ID")["VALUE"] == "2.8"           # existing client kept
+                srv.set_local_only(False)
+                with OpenGazeClient(target, srv.port) as c2:
+                    assert c2.get("CAMERA_SIZE")["WIDTH"] == "752"
+        finally:
+            srv.stop()

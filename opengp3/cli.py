@@ -8,7 +8,7 @@
     opengp3 validate --calibration cal.json
     opengp3 track --calibration cal.json [--csv gaze.csv] [--show]
     opengp3 accuracy [--points 9] [--area-diag-in 22] [--plot result.png]
-    opengp3 server [--port 4242] [--host 0.0.0.0]  Open Gaze API server + LSL + control window
+    opengp3 server [--port 4242] [--local-only]    Open Gaze API server + LSL + control window
     opengp3 marker marker.png [--mm 11]            printable marker for pupil size in mm
     opengp3 setup                                  Linux: one-time USB permission rule
 
@@ -382,7 +382,8 @@ def cmd_server(a):
     from .calibration import API_DEFAULT_POINTS, NINE_POINTS
     with gt:
         _report_area(gt)
-        srv = OpenGazeServer(gt, a.host, a.port,
+        host = "127.0.0.1" if a.local_only else a.host
+        srv = OpenGazeServer(gt, host, a.port,
                              default_points=API_DEFAULT_POINTS if a.points == 5 else NINE_POINTS).start()
         lsl = None
         if not a.no_lsl:
@@ -393,9 +394,15 @@ def cmd_server(a):
             except Exception as e:  # e.g. liblsl unavailable: keep serving the API
                 print(f"LSL streaming disabled: {e}", flush=True)
         print(f"{gt.model} at {gt.rate:.0f} Hz, {gt.image_size[0]}x{gt.image_size[1]}", flush=True)
-        print(f"Open Gaze API server listening on {a.host}:{srv.port}  "
+        print(f"Open Gaze API server listening on {srv.host}:{srv.port}  "
               f"(screen {screen.width}x{screen.height}"
               + (f", {screen.width_cm:.1f} cm" if screen.width_cm else "") + ")", flush=True)
+        if srv.local_only:
+            print("API: this computer only (--local-only)", flush=True)
+        else:
+            print("API: clients on other computers connect to " + ", ".join(srv.addresses())
+                  + "  (no authentication: anyone on these networks can connect; "
+                  "--local-only to restrict)", flush=True)
         try:
             qt = not a.opencv_ui
             if qt:
@@ -530,7 +537,11 @@ def main(argv=None):
 
     s = sub.add_parser("server", help="Open Gaze API server with tracker display and calibration")
     screen_opts(s)
-    s.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to accept remote clients")
+    s.add_argument("--host", default="0.0.0.0",
+                   help="address to listen on (default 0.0.0.0: all networks, so other computers "
+                        "can connect)")
+    s.add_argument("--local-only", action="store_true",
+                   help="accept API connections from this computer only (same as --host 127.0.0.1)")
     s.add_argument("--port", type=int, default=4242)
     s.add_argument("--calibration", help="calibration to load (default: the last one)")
     s.add_argument("--no-display", action="store_true", help="start without the tracker window")

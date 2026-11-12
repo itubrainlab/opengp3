@@ -557,7 +557,7 @@ def test_tracker_pipeline_on_gp3hd(hd):
         assert s.eyes["R"].pupil_x == pytest.approx(520, abs=1.5)
         assert s.eyes["L"].pupil_x == pytest.approx(780, abs=1.5)
         from opengp3.server import OpenGazeServer, _Client
-        srv = OpenGazeServer(gt, port=0)
+        srv = OpenGazeServer(gt, "127.0.0.1", port=0)
         ack = srv.handle(_Client(sock=None, addr=None), "GET", "PRODUCT_ID", {})[0]
         assert 'VALUE="GP3HD" BUS="USB3" RATE="150"' in ack
         ack = srv.handle(_Client(sock=None, addr=None), "GET", "SERIAL_ID", {})[0]

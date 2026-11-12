@@ -25,7 +25,7 @@ def app():
 def window(app, fake_camera, tmp_path):
     gt = GazeTracker(SCREEN, camera=fake_camera, input_monitor=False)
     gt.start()
-    srv = OpenGazeServer(gt, port=0).start()
+    srv = OpenGazeServer(gt, "127.0.0.1", port=0).start()
     w = main_window_class()(gt, srv, lsl=None, media_dir=None, save_path=tmp_path / "cal.json",
                             mirror=True, show_tracker=True, screen_args={})
     w.show()
@@ -112,3 +112,13 @@ def test_screen_selection(app, window, monkeypatch):
     w.cmb_screen.addItem("x", 1)
     w.cmb_screen.setCurrentIndex(w.cmb_screen.count() - 1)
     assert gt.screen.width == 1920 and gt.screen.width_cm == pytest.approx(52.7)
+
+
+def test_remote_access_switch(app, window):
+    w, gt, srv, cam = window
+    assert srv.local_only and not w.cb_remote.isChecked()           # fixture: local
+    w.cb_remote.setChecked(True)
+    assert not srv.local_only and srv.port > 0
+    assert w.lb_address.text() == "\n".join(srv.addresses())
+    w.cb_remote.setChecked(False)
+    assert srv.local_only and w.lb_address.text() == f"127.0.0.1:{srv.port}"

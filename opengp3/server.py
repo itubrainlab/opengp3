@@ -32,6 +32,31 @@ from .tracker import GazeSample, GazeTracker
 
 API_VERSION = "2.8"
 
+ALL_NETWORKS = "0.0.0.0"           # default: reachable from other computers (multi-machine setups)
+LOCAL_ONLY = ("127.0.0.1", "localhost", "::1")
+
+
+def local_ipv4_addresses() -> list[str]:
+    """This computer's IPv4 addresses on its networks (no loopback): what
+    clients on other machines connect to."""
+    found: list[str] = []
+    try:  # the address of the default route (connect() on UDP sends nothing)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))
+            found.append(s.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            found.append(info[4][0])
+    except OSError:
+        pass
+    out = []
+    for a in found:
+        if a and not a.startswith("127.") and a not in out:
+            out.append(a)
+    return out
+
 # ENABLE_SEND_* names in record field order
 DATA_FIELDS = ["COUNTER", "TIME", "TIME_TICK", "POG_FIX", "POG_LEFT", "POG_RIGHT", "POG_BEST",
                "POG_AAC", "PUPIL_LEFT", "PUPIL_RIGHT", "EYE_LEFT", "EYE_RIGHT", "CURSOR", "KB",
@@ -85,7 +110,7 @@ class OpenGazeServer:
     ("tracker_display", bool).
     """
 
-    def __init__(self, tracker: GazeTracker, host: str = "127.0.0.1", port: int = 4242,
+    def __init__(self, tracker: GazeTracker, host: str = ALL_NETWORKS, port: int = 4242,
                  product: str = "GP3", default_points=None):
         self.tracker, self.host, self.port, self.product = tracker, host, port, product
         self.clients: list[_Client] = []
@@ -110,14 +135,55 @@ class OpenGazeServer:
 
     # ----------------------------------------------------------- networking
     def start(self) -> "OpenGazeServer":
-        self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._srv.bind((self.host, self.port))
-        self._srv.listen(8)
-        self.port = self._srv.getsockname()[1]
         self._running = True
-        threading.Thread(target=self._accept, name="opengaze-accept", daemon=True).start()
+        self._listen(self.host)
         return self
+
+    def _listen(self, host: str):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, self.port))
+        except OSError:
+            sock.close()
+            raise
+        sock.listen(8)
+        self._srv, self.host = sock, host
+        self.port = sock.getsockname()[1]
+        threading.Thread(target=self._accept, args=(sock,), name="opengaze-accept",
+                         daemon=True).start()
+
+    @property
+    def local_only(self) -> bool:
+        """True when only programs on this computer can connect."""
+        return self.host in LOCAL_ONLY or self.host.startswith("127.")
+
+    def set_local_only(self, local_only: bool):
+        """Switch between accepting connections from this computer only and
+        from all networks, while running. Connected clients stay connected."""
+        self.set_host(LOCAL_ONLY[0] if local_only else ALL_NETWORKS)
+
+    def set_host(self, host: str):
+        """Listen on another address (same port), keeping connected clients."""
+        if host == self.host or not self._running:
+            self.host = host
+            return
+        old = self.host
+        if self._srv:
+            self._srv.close()  # its accept thread ends
+        try:
+            self._listen(host)
+        except OSError:
+            self._listen(old)  # keep serving on the previous address
+            raise
+
+    def addresses(self) -> list[str]:
+        """host:port strings clients can use to reach this server."""
+        if self.local_only:
+            return [f"127.0.0.1:{self.port}"]
+        if self.host not in (ALL_NETWORKS, ""):
+            return [f"{self.host}:{self.port}"]
+        return [f"{a}:{self.port}" for a in local_ipv4_addresses()] or [f"127.0.0.1:{self.port}"]
 
     def stop(self):
         self._running = False
@@ -137,11 +203,11 @@ class OpenGazeServer:
     def __exit__(self, *exc):
         self.stop()
 
-    def _accept(self):
+    def _accept(self, listener: socket.socket):
         while self._running:
             try:
-                sock, addr = self._srv.accept()
-            except OSError:
+                sock, addr = listener.accept()
+            except OSError:  # listener closed (stop or address change)
                 return
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             c = _Client(sock, addr)

@@ -91,8 +91,8 @@ opengp3 setup                                  # Linux: one-time USB permission 
 with its control window, the counterpart of Gazepoint Control:
 
 ```bash
-opengp3 [--display N] [--no-lsl] [--points 9|5] [--host 0.0.0.0] [--port 4242] [--monocular R|L]
-        [--auto-gain] [--media DIR] [--no-mirror] [--hz 60|150] [--opencv-ui]
+opengp3 [--display N] [--no-lsl] [--points 9|5] [--local-only] [--port 4242] [--monocular R|L]
+        [--auto-gain] [--media DIR] [--no-mirror] [--hz 60|150] [--opencv-ui] [--simulate]
 ```
 
 The window (Qt) has the tracker display on the left and these panels on the right:
@@ -104,7 +104,7 @@ The window (Qt) has the tracker display on the left and these panels on the righ
 | Calibration | Points (5, 9, 13, 16, 25), speed, tone per point, custom target images; **Calibrate** / Stop, **1-point** drift correction, **Undo** (toggle with the previous calibration), **Validate** (accuracy and precision report), **Show results**; summary per eye (points, model, error in px and degrees) and a table of every point's error per eye |
 | Gaze | Gaze pointer (mouse follows gaze), AAC filter length, both eyes / right only / left only, gain sweep, printed marker for pupil size in mm |
 | Screen | Display (with the OS-reported size), physical width, viewing distance, 22" calibration area on larger screens |
-| Open Gaze API server | Address, API version, connected clients, LSL streaming |
+| Open Gaze API server | Address(es) to connect to, **Allow connections from other computers** switch, API version, connected clients, LSL streaming |
 
 Calibration and validation run in a fullscreen window on the selected screen. After a calibration it
 shows the targets, each eye's calibrated gaze (blue right, orange left) and the live gaze point; keys
@@ -114,6 +114,15 @@ PySide6) runs the earlier OpenCV windows with keyboard controls instead: tracker
 `p` gaze pointer, `g` gain sweep, `q` quit; calibration window `c`, `5`/`9`, `1`, `u`, `s` tone,
 `+`/`-`/`d` speed.
 
+- **Network access:** the API listens on all networks by default (port 4242), so clients on other
+  computers can connect, for multi-machine setups. The startup message and the app show the address
+  to use. The API has **no authentication**: anyone who can reach the port can read gaze data and
+  send commands. On untrusted networks use `--local-only`, or turn off "Allow connections from other
+  computers" in the app, which switches while running and keeps connected clients. Your OS firewall
+  may ask once whether to allow incoming connections.
+- **No hardware?** `--simulate` (or `OPENGP3_SIMULATE=1`) runs everything on a simulated GP3: the
+  simulated person looks at your mouse cursor and follows calibration targets by themselves. It
+  keeps its own calibration file, so your real calibration is never overwritten.
 - **Lab Streaming Layer, on by default** (`--no-lsl` turns it off; pylsl is installed with OpenGP3):
   - **`OpenGP3 Gaze`** (type `Gaze`, 60 Hz or the GP3 HD's 150 Hz, 26 float channels, named after the Open Gaze API fields):
     binocular, fixation and per-eye gaze (screen fractions), pupil size in mm, pupil positions in the

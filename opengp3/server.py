@@ -150,8 +150,28 @@ class OpenGazeServer:
         sock.listen(8)
         self._srv, self.host = sock, host
         self.port = sock.getsockname()[1]
-        threading.Thread(target=self._accept, args=(sock,), name="opengaze-accept",
-                         daemon=True).start()
+        self._accept_thread = threading.Thread(target=self._accept, args=(sock,),
+                                               name="opengaze-accept", daemon=True)
+        self._accept_thread.start()
+
+    def _close_listener(self):
+        """Close the listening socket and wait for its accept thread. On Linux
+        close() alone neither wakes a thread blocked in accept() nor frees the
+        port; shutdown() does both."""
+        sock, self._srv = self._srv, None
+        if sock is None:
+            return
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            sock.close()
+        except OSError:
+            pass
+        t = getattr(self, "_accept_thread", None)
+        if t is not None and t is not threading.current_thread():
+            t.join(timeout=2)
 
     @property
     def local_only(self) -> bool:
@@ -169,8 +189,7 @@ class OpenGazeServer:
             self.host = host
             return
         old = self.host
-        if self._srv:
-            self._srv.close()  # its accept thread ends
+        self._close_listener()
         try:
             self._listen(host)
         except OSError:
@@ -188,11 +207,7 @@ class OpenGazeServer:
     def stop(self):
         self._running = False
         self.tracker.remove_callback(self._on_sample)
-        if self._srv:
-            try:
-                self._srv.close()
-            except OSError:
-                pass
+        self._close_listener()
         with self._lock:
             for c in self.clients:
                 self._drop(c)

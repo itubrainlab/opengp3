@@ -75,8 +75,14 @@ class LSLStreamer:
         rate = float(getattr(cam, "rate", 60.0))
         info = lsl.StreamInfo(f"{name} Gaze", "Gaze", len(CHANNELS), rate, "float32", source_id)
         desc = info.desc()
-        desc.append_child_value("manufacturer",
-                                f"OpenGP3 (Gazepoint {getattr(cam, 'model', 'GP3')} hardware)")
+        warning = getattr(tracker, "warning", None)
+        if warning:  # webcam fallback: make it unmistakable in recordings (XDF)
+            desc.append_child_value("manufacturer",
+                                    "OpenGP3 webcam eye tracking (NOT a Gazepoint eye tracker)")
+            desc.append_child_value("warning", warning)
+        else:
+            desc.append_child_value("manufacturer",
+                                    f"OpenGP3 (Gazepoint {getattr(cam, 'model', 'GP3')} hardware)")
         ch = desc.append_child("channels")
         for label, unit, d in CHANNELS:
             c = ch.append_child("channel")
@@ -97,6 +103,8 @@ class LSLStreamer:
         self.markers = lsl.StreamOutlet(minfo)
         self._last_user = ""
         self.samples = 0
+        if warning:
+            self.marker(f"WARNING: {warning}")
         tracker.add_callback(self._on_sample)
 
     def close(self):

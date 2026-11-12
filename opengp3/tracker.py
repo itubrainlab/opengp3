@@ -432,6 +432,11 @@ class GazeTracker:
         return eye_tracker.update(found)
 
     @property
+    def warning(self) -> str | None:
+        """Why the data may be unreliable (e.g. the webcam fallback), else None."""
+        return getattr(self._cam, "warning", None)
+
+    @property
     def illumination(self) -> str:
         """"bright-dark" (GP3 HD, Gazepoint's alternating LED banks: detected
         with ``BrightDarkDetector``) or "dark" (dark pupil, ``detect_eyes``)."""
@@ -441,8 +446,12 @@ class GazeTracker:
         # pupil-size consistency check for dark-pupil (GP3) images only: the
         # GP3 HD's bright/dark frames measure the pupil differently
         eye_tracker = EyeTracker(size_check=self.illumination == "dark")
-        bright_dark = BrightDarkDetector() if self.illumination == "bright-dark" else None
-        pupil_gain = PupilGainControl(self._cam) if bright_dark is not None else None
+        if self.illumination == "webcam":       # fallback: landmarks in webcam images
+            from .webcam import WebcamEyeDetector
+            bright_dark = WebcamEyeDetector()
+        else:
+            bright_dark = BrightDarkDetector() if self.illumination == "bright-dark" else None
+        pupil_gain = PupilGainControl(self._cam) if self.illumination == "bright-dark" else None
         last_seq = 0
         gain = _GainSweep(self)
         fps_t, fps_n = time.time(), 0
@@ -471,7 +480,8 @@ class GazeTracker:
                 self._latest = s
                 # display frames: with the GP3 HD's alternating illumination only the
                 # dark-pupil frames (50 Hz), else the view flickers between frame types
-                if bright_dark is None or bright_dark.last_kind == "D":
+                # (detectors without frame types, e.g. the webcam's, show every frame)
+                if getattr(bright_dark, "last_kind", "D") == "D":
                     self._latest_image, self._image_sample = img, s  # image + its own result
                 subs, cbs = list(self._subs), list(self._callbacks)
             for q in subs:

@@ -310,9 +310,18 @@ def is_u3v(dev) -> bool:
     return False
 
 
-def open_camera(auto_setup: bool | None = None):
+def open_camera(auto_setup: bool | None = None, webcam_fallback: bool | None = None,
+                webcam: bool = False):
     """Open the first Gazepoint camera on the USB bus: a GP3 (``GP3Camera``)
-    or a GP3 HD (``GP3HDCamera``). Both have the same interface."""
+    or a GP3 HD (``GP3HDCamera``). Both have the same interface.
+
+    If neither is connected, fall back to webcam-based eye tracking
+    (``opengp3.webcam``, needs ``pip install "opengp3[webcam]"``), with a
+    warning: it is far less accurate. ``webcam_fallback=False`` or
+    OPENGP3_NO_WEBCAM_FALLBACK=1 disables the fallback; ``webcam=True`` uses
+    the webcam even if a Gazepoint tracker is connected."""
+    if webcam:
+        return _open_webcam_fallback(None)
     def opener():
         backend = _libusb_backend()
         devs = list(usb.core.find(find_all=True, idVendor=VID, backend=backend) or ())
@@ -325,7 +334,28 @@ def open_camera(auto_setup: bool | None = None):
                 return GP3Camera._open_device(dev)
         raise GP3NotFoundError("no GP3 or GP3 HD found on USB (VID 0x1e10). "
                                "Is it plugged in, and not in use by another program?")
-    return _open_with_setup(opener, auto_setup)
+    try:
+        return _open_with_setup(opener, auto_setup)
+    except GP3NotFoundError as e:
+        if webcam_fallback is None:
+            webcam_fallback = os.environ.get("OPENGP3_NO_WEBCAM_FALLBACK", "").strip() not in (
+                "1", "true", "yes")
+        if not webcam_fallback:
+            raise
+        return _open_webcam_fallback(e)
+
+
+def _open_webcam_fallback(not_found: GP3NotFoundError | None):
+    import warnings
+    from .webcam import WEBCAM_WARNING, WebcamUnavailable, open_webcam
+    try:
+        cam = open_webcam()
+    except WebcamUnavailable as w:
+        if not_found is None:
+            raise
+        raise GP3NotFoundError(f"{not_found}\nWebcam fallback not available: {w}") from not_found
+    warnings.warn(WEBCAM_WARNING, RuntimeWarning, stacklevel=3)
+    return cam
 
 
 def _bit(value: int, n: int) -> bool:

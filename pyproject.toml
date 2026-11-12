@@ -38,6 +38,9 @@ Homepage = "https://github.com/itubrainlab/opengp3"
 Issues = "https://github.com/itubrainlab/opengp3/issues"
 
 [project.optional-dependencies]
+# webcam-based eye tracking as a low-accuracy fallback when no GP3 is connected
+# (Google MediaPipe; note it installs opencv-contrib-python alongside opencv-python)
+webcam = ["mediapipe>=0.10.30"]
 lsl = []  # kept so existing "opengp3[lsl]" installs keep working; pylsl is now a core dependency
 dev = ["pytest>=7"]
 

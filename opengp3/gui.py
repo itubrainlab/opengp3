@@ -184,6 +184,17 @@ def _make_main_window():
             root = QWidget()
             lay = QHBoxLayout(root)
             left = QVBoxLayout()
+            # degraded-data warning (webcam fallback): impossible to miss
+            self.banner = QLabel()
+            self.banner.setWordWrap(True)
+            self.banner.setStyleSheet("background: #b00020; color: white; font-weight: bold; "
+                                      "padding: 8px; border-radius: 4px;")
+            warning = self.gt.warning
+            self.banner.setText(f"⚠ {warning}" if warning else "")
+            self.banner.setVisible(bool(warning))
+            left.addWidget(self.banner)
+            if warning:
+                self.setWindowTitle(self.windowTitle() + " - WEBCAM FALLBACK (low accuracy)")
             self.view = QLabel("starting camera...")
             self.view.setAlignment(Qt.AlignCenter)
             self.view.setMinimumSize(560, 448)

@@ -395,13 +395,15 @@ class OpenGazeServer:
             model = getattr(cam, "model", "GP3")
             product = self.product if self.product != "GP3" else model.replace(" ", "")
             return ack(("VALUE", product), ("BUS", getattr(cam, "bus", "USB2")),
-                       ("RATE", f"{getattr(cam, 'rate', 60.0):.0f}"))
+                       ("RATE", f"{getattr(cam, 'rate', 60.0):.0f}"), *self._warning())
         if ident == "SERIAL_ID":
-            return ack(("VALUE", self._serial()))
+            return ack(("VALUE", self._serial()), *self._warning())
         if ident == "COMPANY_ID":
-            return ack(("VALUE", "GAZEPOINT"))  # manufacturer of the eye-tracker hardware
+            # manufacturer of the eye-tracker hardware (none for the webcam fallback)
+            return ack(("VALUE", "WEBCAM" if tr.warning else "GAZEPOINT"), *self._warning())
         if ident == "API_ID":
-            return ack(("VALUE", API_VERSION), ("IMPL", f"OpenGP3 {__version__}"))
+            return ack(("VALUE", API_VERSION), ("IMPL", f"OpenGP3 {__version__}"),
+                       *self._warning())
         if ident == "TRACKER_ID":
             return ack(("ACTIVE_ID", 0), ("MAX_ID", 1), ("SEARCH", "NONE"))
         if ident == "MARKER_PIX":
@@ -424,6 +426,12 @@ class OpenGazeServer:
             return ack(("VALUE", tr.aac.length))
         # TTL_WRITE and anything else: not available (no biometrics hardware)
         return nack
+
+    def _warning(self) -> list[tuple[str, str]]:
+        """Extra WARNING attribute when the data is degraded (webcam fallback);
+        standard clients ignore unknown attributes."""
+        w = self.tracker.warning
+        return [("WARNING", w)] if w else []
 
     def _serial(self) -> str:
         from .lsl import _serial

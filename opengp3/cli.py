@@ -96,7 +96,15 @@ def _simulated(a) -> bool:
 
 
 def _tracker(a, *args, **kw) -> GazeTracker:
-    """GazeTracker on the real GP3, or on a simulated one with --simulate."""
+    """GazeTracker on the real GP3, a simulated one with --simulate, or the
+    webcam with --webcam (otherwise the webcam is only a fallback)."""
+    if getattr(a, "no_webcam", False):
+        os.environ["OPENGP3_NO_WEBCAM_FALLBACK"] = "1"
+    if getattr(a, "webcam", False) and not _simulated(a):
+        from .camera import open_camera
+        gt = GazeTracker(*args, camera=open_camera(webcam=True), **kw)
+        gt._own_cam = True
+        return gt
     if _simulated(a):
         from .simulate import SimulatedCamera
         cam = SimulatedCamera()
@@ -368,19 +376,22 @@ def cmd_server(a):
     from .control import ControlApp, default_calibration_path
     from .server import OpenGazeServer
     screen = _screen(a)
-    path = default_calibration_path(_simulated(a))
-    cal = None
-    src = a.calibration or (str(path) if path.exists() else None)
-    if src:
-        try:
-            cal = Calibration.load(src)
-            print(f"loaded calibration {src}", flush=True)
-        except Exception as e:
-            print(f"could not load calibration {src}: {e}")
-    gt = _tracker(a, screen, calibration=cal, monocular=a.monocular, auto_gain=a.auto_gain,
+    gt = _tracker(a, screen, monocular=a.monocular, auto_gain=a.auto_gain,
                      aac_length=a.aac_filter, max_diagonal_in=_max_diag(a), rate_hz=a.hz)
     from .calibration import API_DEFAULT_POINTS, NINE_POINTS
     with gt:
+        # the calibration file depends on the camera actually opened (GP3,
+        # simulated, or the webcam fallback, which may have been chosen just now)
+        path = default_calibration_path(_simulated(a), getattr(gt.camera, "webcam", False))
+        src = a.calibration or (str(path) if path.exists() else None)
+        if src:
+            try:
+                cal = Calibration.load(src)
+                gt.calibration = cal
+                gt._apply_calibration_meta(cal)
+                print(f"loaded calibration {src}", flush=True)
+            except Exception as e:
+                print(f"could not load calibration {src}: {e}")
         _report_area(gt)
         host = "127.0.0.1" if a.local_only else a.host
         srv = OpenGazeServer(gt, host, a.port,
@@ -394,6 +405,14 @@ def cmd_server(a):
             except Exception as e:  # e.g. liblsl unavailable: keep serving the API
                 print(f"LSL streaming disabled: {e}", flush=True)
         print(f"{gt.model} at {gt.rate:.0f} Hz, {gt.image_size[0]}x{gt.image_size[1]}", flush=True)
+        if gt.warning:
+            # let the first frame through first: its one-off library log lines
+            # (e.g. MediaPipe/TensorFlow Lite) then come before the warning
+            t_end = time.time() + 5
+            while gt.latest() is None and time.time() < t_end:
+                time.sleep(0.05)
+            bar = "!" * 78
+            print(f"\n{bar}\n WARNING: {gt.warning}\n{bar}\n", flush=True)
         print(f"Open Gaze API server listening on {srv.host}:{srv.port}  "
               f"(screen {screen.width}x{screen.height}"
               + (f", {screen.width_cm:.1f} cm" if screen.width_cm else "") + ")", flush=True)
@@ -476,6 +495,11 @@ def main(argv=None):
         s.add_argument("--no-leds", action="store_true", help="leave the IR illuminators off")
 
     def screen_opts(s):
+        s.add_argument("--webcam", action="store_true",
+                       help="use webcam eye tracking even if a GP3 is connected (low accuracy; "
+                            "needs opengp3[webcam])")
+        s.add_argument("--no-webcam", action="store_true",
+                       help="don't fall back to webcam eye tracking when no GP3 is connected")
         s.add_argument("--simulate", action="store_true",
                        help="no hardware: a simulated GP3 (the simulated person looks at the mouse "
                             "cursor and follows calibration targets)")

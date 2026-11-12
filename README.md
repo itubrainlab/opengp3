@@ -120,6 +120,22 @@ PySide6) runs the earlier OpenCV windows with keyboard controls instead: tracker
   send commands. On untrusted networks use `--local-only`, or turn off "Allow connections from other
   computers" in the app, which switches while running and keeps connected clients. Your OS firewall
   may ask once whether to allow incoming connections.
+- **Webcam fallback (low accuracy).** If neither a GP3 nor a GP3 HD is connected, OpenGP3 falls back
+  to webcam-based eye tracking, after `pip install "opengp3[webcam]"` (Google MediaPipe face/iris
+  landmarks; the face model, about 4 MB, is downloaded once to `~/.opengp3/models`).
+  - **How it works:** the iris position within each eye takes the place of the pupil–glint vector,
+    so calibration, fixations, blinks, the API server and LSL all work.
+  - **Expect much less:** typically 2–5° accuracy instead of about 0.5°, strong sensitivity to head
+    movement (recalibrate after moving) and lighting, and no pupil size.
+  - **Warnings:** OpenGP3 says so everywhere: a red banner and window title in the Control app, the
+    console, a Python `RuntimeWarning`, the API (`PRODUCT_ID`/`COMPANY_ID` report `WEBCAM`;
+    `PRODUCT_ID`, `API_ID`, `COMPANY_ID` and `SERIAL_ID` carry a `WARNING` attribute) and LSL (stream
+    metadata, saved in XDF files, plus a warning marker).
+  - **Options:** `--webcam` forces it even with a GP3 connected; `--no-webcam` (or
+    `OPENGP3_NO_WEBCAM_FALLBACK=1`) disables the fallback.
+  - **macOS:** allow camera access for the app running OpenGP3.
+  - **Package note:** MediaPipe installs `opencv-contrib-python` next to `opencv-python`; both provide
+    the `cv2` module, so keep their versions equal.
 - **No hardware?** `--simulate` (or `OPENGP3_SIMULATE=1`) runs everything on a simulated GP3: the
   simulated person looks at your mouse cursor and follows calibration targets by themselves. It
   keeps its own calibration file, so your real calibration is never overwritten.

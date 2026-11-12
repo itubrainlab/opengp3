@@ -31,10 +31,12 @@ from .tracker import GazeTracker, distance_label
 
 
 
-def default_calibration_path(simulated: bool = False) -> Path:
-    """Where the last calibration is kept. Simulated runs use their own file
-    so they never overwrite the real tracker's calibration."""
-    name = "calibration-simulated.json" if simulated else "calibration.json"
+def default_calibration_path(simulated: bool = False, webcam: bool = False) -> Path:
+    """Where the last calibration is kept. Simulated and webcam runs use their
+    own files: their gaze features differ from the GP3's, so a calibration
+    from one can't be used by another (and must never overwrite it)."""
+    name = ("calibration-simulated.json" if simulated else
+            "calibration-webcam.json" if webcam else "calibration.json")
     return Path(os.environ.get("OPENGP3_HOME", Path.home() / ".opengp3")) / name
 
 

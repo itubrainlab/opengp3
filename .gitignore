@@ -14,3 +14,6 @@ test_frames/
 *.png
 *.csv
 calibration*.json
+
+# local webcam check output (contains a camera image)
+/webcam_check.*

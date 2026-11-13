@@ -29,7 +29,7 @@ The tracker model is detected automatically: a GP3 (USB 2) or a GP3 HD (USB 3, s
 
 ```bash
 pip install git+https://github.com/itubrainlab/opengp3          # latest
-pip install git+https://github.com/itubrainlab/opengp3@v0.4.1   # a release
+pip install git+https://github.com/itubrainlab/opengp3@v0.5.0   # a release
 ```
 
 libusb comes bundled (via `libusb-package`). USB access per OS:

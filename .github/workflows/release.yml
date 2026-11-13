@@ -70,7 +70,7 @@ jobs:
           mv opengp3 _opengp3_source
           python -c "import opengp3, sys; print('testing', opengp3.__version__, 'from', opengp3.__file__)"
       - name: Full test suite
-        run: python -m pytest -q
+        run: python -m pytest -q --durations=25
 
   attach:
     needs: test

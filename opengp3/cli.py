@@ -106,8 +106,8 @@ def _tracker(a, *args, **kw) -> GazeTracker:
         gt._own_cam = True
         return gt
     if _simulated(a):
-        from .simulate import SimulatedCamera
-        cam = SimulatedCamera()
+        from .simulate import open_simulated
+        cam = open_simulated()
         gt = GazeTracker(*args, camera=cam, **kw)
         cam.attach(gt)
         print("simulated GP3: the simulated person looks at your mouse cursor and follows "

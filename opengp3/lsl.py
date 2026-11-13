@@ -76,9 +76,9 @@ class LSLStreamer:
         info = lsl.StreamInfo(f"{name} Gaze", "Gaze", len(CHANNELS), rate, "float32", source_id)
         desc = info.desc()
         warning = getattr(tracker, "warning", None)
-        if warning:  # webcam fallback: make it unmistakable in recordings (XDF)
+        if warning:  # webcam / simulated: make it unmistakable in recordings (XDF)
             desc.append_child_value("manufacturer",
-                                    "OpenGP3 webcam eye tracking (NOT a Gazepoint eye tracker)")
+                                    getattr(cam, "description", "OpenGP3 (degraded data)"))
             desc.append_child_value("warning", warning)
         else:
             desc.append_child_value("manufacturer",

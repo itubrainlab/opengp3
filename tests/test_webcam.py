@@ -86,9 +86,9 @@ class _Detector:
 
 @pytest.fixture
 def webcam_tracker(fake_camera, monkeypatch):
-    fake_camera.illumination = "webcam"
-    fake_camera.model = "WEBCAM"
-    fake_camera.warning = WEBCAM_WARNING
+    for attr in ("illumination", "model", "warning", "warning_title", "product_id",
+                 "company_id", "description"):  # a webcam's self-description
+        setattr(fake_camera, attr, getattr(webcam.WebcamCamera, attr))
     monkeypatch.setattr(webcam, "WebcamEyeDetector", lambda: _Detector(fake_camera))
     gt = GazeTracker(Screen(1920, 1080, width_cm=47.0), camera=fake_camera, input_monitor=False)
     with gt:
@@ -178,3 +178,53 @@ def test_calibration_files_are_separate(monkeypatch, tmp_path):
     names = {default_calibration_path().name, default_calibration_path(simulated=True).name,
              default_calibration_path(webcam=True).name}
     assert names == {"calibration.json", "calibration-simulated.json", "calibration-webcam.json"}
+
+
+def test_auto_open_skips_black_virtual_camera(monkeypatch):
+    """Index 0 can be a virtual camera (e.g. OBS) that only sends black frames:
+    the fallback must move on to the first camera with a real image."""
+    import opengp3.sources as sources
+    monkeypatch.setattr(webcam, "_require_mediapipe", lambda: None)
+    monkeypatch.setattr(webcam, "model_path", lambda download=True: None)
+    monkeypatch.setattr(sources, "preferred_webcam_order", lambda: [])   # unknown: 0, 1, 2...
+    tried = []
+
+    class FakeWebcam:
+        def __init__(self, index, first_frame_timeout=4.0):
+            tried.append(index)
+            if index == 0:
+                raise webcam.BlackCamera("camera 0 delivers only black frames - probably virtual")
+            if index >= 3:
+                raise webcam.WebcamUnavailable(f"no webcam at index {index}")
+            self.index = index
+    monkeypatch.setattr(webcam, "WebcamCamera", FakeWebcam)
+    assert webcam.open_webcam().index == 1 and tried == [0, 1]
+    assert webcam.open_webcam(index=2).index == 2          # explicit choice is respected
+
+    class AllBlack(FakeWebcam):
+        def __init__(self, index, first_frame_timeout=4.0):
+            tried.append(index)
+            if index < 2:
+                raise webcam.BlackCamera(f"camera {index} delivers only black frames - x")
+            raise webcam.WebcamUnavailable(f"no webcam at index {index}")
+    monkeypatch.setattr(webcam, "WebcamCamera", AllBlack)
+    with pytest.raises(webcam.WebcamUnavailable, match="camera 0 delivers only black frames"):
+        webcam.open_webcam()
+
+
+
+def test_auto_open_prefers_real_cameras(monkeypatch):
+    """With names known, built-in cameras are tried before phones and virtual
+    cameras (whose placeholder image isn't black, so it would be accepted)."""
+    import opengp3.sources as sources
+    monkeypatch.setattr(webcam, "_require_mediapipe", lambda: None)
+    monkeypatch.setattr(webcam, "model_path", lambda download=True: None)
+    monkeypatch.setattr(sources, "preferred_webcam_order", lambda: [1, 0, 2])
+    tried = []
+
+    class FakeWebcam:
+        def __init__(self, index, first_frame_timeout=4.0):
+            tried.append(index)
+            self.index = index
+    monkeypatch.setattr(webcam, "WebcamCamera", FakeWebcam)
+    assert webcam.open_webcam().index == 1 and tried == [1]

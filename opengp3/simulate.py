@@ -27,11 +27,29 @@ import numpy as np
 from .platform import mouse_position
 
 
+def open_simulated() -> "SimulatedCamera":
+    """A SimulatedCamera, announced with a RuntimeWarning (as the CLI and the
+    Control app open it), so nobody mistakes its data for real recordings."""
+    import warnings
+    warnings.warn(SIMULATED_WARNING, RuntimeWarning, stacklevel=2)
+    return SimulatedCamera()
+
+
+SIMULATED_WARNING = ("SIMULATED EYE TRACKER - no real eye-tracking data. The images are "
+                     "synthetic and the simulated person looks at your mouse cursor (and follows "
+                     "calibration targets by itself); do not use this data for research.")
+
+
 class SimulatedCamera:
     """Drop-in replacement for ``GP3Camera`` (same interface as used by
     ``GazeTracker``). 752x480 MONO8 at 60 fps."""
 
-    model = "GP3"
+    model = "Simulated GP3"
+    warning = SIMULATED_WARNING
+    warning_title = "SIMULATED (no real eye data)"
+    product_id = "SIMULATED"
+    company_id = "SIMULATED"
+    description = "OpenGP3 simulated GP3 (NOT real eye-tracking data)"
     simulated = True
     rate = 60.0
     width, height = 752, 480

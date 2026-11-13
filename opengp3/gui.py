@@ -430,7 +430,7 @@ def _make_main_window():
             self.banner.setText(f"⚠ {warning}" if warning else "")
             self.banner.setVisible(bool(warning))
             title = f"OpenGP3 Control - {self.gt.model}"
-            self.setWindowTitle(title + (" - WEBCAM FALLBACK (low accuracy)" if warning else ""))
+            self.setWindowTitle(title + (f" - {self.gt.warning_title}" if warning else ""))
 
         def _camera_selected(self, i: int):
             from .calibration import Calibration

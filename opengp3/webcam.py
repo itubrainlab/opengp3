@@ -49,6 +49,11 @@ class WebcamUnavailable(GP3Error):
     no permission)."""
 
 
+class BlackCamera(WebcamUnavailable):
+    """A camera that opens but only delivers black frames (e.g. a virtual
+    camera with no source)."""
+
+
 @dataclass
 class WebcamEyeFeature(EyeFeature):
     """An eye found in a webcam image. ``pupil_x/y`` is the iris centre,
@@ -169,8 +174,13 @@ class WebcamCamera:
     webcam = True
     dev = None
     warning = WEBCAM_WARNING
+    warning_title = "WEBCAM FALLBACK (low accuracy)"
+    product_id = "WEBCAM"
+    company_id = "WEBCAM"
+    description = "OpenGP3 webcam eye tracking (NOT a Gazepoint eye tracker)"
 
-    def __init__(self, index: int = 0, width: int = 1280, height: int = 720, fps: float = 30.0):
+    def __init__(self, index: int = 0, width: int = 1280, height: int = 720, fps: float = 30.0,
+                 first_frame_timeout: float = 4.0):
         self.index = index
         backend = cv2.CAP_AVFOUNDATION if os.uname().sysname == "Darwin" else cv2.CAP_ANY
         self.cap = cv2.VideoCapture(index, backend)
@@ -179,7 +189,7 @@ class WebcamCamera:
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         self.cap.set(cv2.CAP_PROP_FPS, fps)
-        frame = self._first_frame()
+        frame = self._first_frame(first_frame_timeout)
         self.height, self.width = frame.shape[:2]
         r = self.cap.get(cv2.CAP_PROP_FPS)
         self.rate = float(r) if r and 1 <= r <= 240 else 30.0
@@ -193,13 +203,20 @@ class WebcamCamera:
 
     def _first_frame(self, timeout: float = 4.0) -> np.ndarray:
         t_end = time.time() + timeout
+        got_frames = False
         while time.time() < t_end:
             ok, f = self.cap.read()
-            if ok and f is not None and f.size and f.mean() > 2:
-                return f
+            if ok and f is not None and f.size:
+                got_frames = True
+                if f.mean() > 2:
+                    return f
             time.sleep(0.05)
         self.cap.release()
-        raise WebcamUnavailable(_permission_hint("the webcam delivered no image"))
+        if got_frames:  # frames arrive but are all black
+            raise BlackCamera(f"camera {self.index} delivers only black frames - probably a "
+                              "virtual camera (e.g. OBS Virtual Camera) with no source; choose "
+                              "another camera")
+        raise WebcamUnavailable(_permission_hint(f"camera {self.index} delivered no image"))
 
     # camera interface ----------------------------------------------------
     def set_full_sensor(self, *a, **k):
@@ -283,8 +300,29 @@ def _permission_hint(msg: str) -> str:
     return msg
 
 
-def open_webcam(index: int = 0) -> WebcamCamera:
-    """Open the webcam fallback (checks the extra and the model first)."""
+def open_webcam(index: int | None = None, max_index: int = 8) -> WebcamCamera:
+    """Open the webcam fallback (checks the extra and the model first).
+
+    With ``index=None``, cameras are tried in order of preference (built-in,
+    external, iPhone/Continuity, virtual; see ``sources.preferred_webcam_order``)
+    and the first one that delivers a real image is used. Index 0 is not
+    always a real camera: on macOS it can be an iPhone that isn't streaming
+    (black frames) or a virtual camera such as OBS's (a placeholder image)."""
     _require_mediapipe()
     model_path()
-    return WebcamCamera(index)
+    if index is not None:
+        return WebcamCamera(index)
+    from .sources import preferred_webcam_order
+    order = preferred_webcam_order() or list(range(max_index))
+    reasons = []
+    for i in order:
+        try:
+            return WebcamCamera(i, first_frame_timeout=2.5)
+        except BlackCamera as e:
+            reasons.append(str(e).split(" - ")[0])
+        except WebcamUnavailable as e:
+            reasons.append(str(e).split(". On macOS")[0])
+            if i > 0 and "no webcam at index" in str(e) and order == list(range(max_index)):
+                break  # no more cameras
+    raise WebcamUnavailable(_permission_hint("no webcam delivered an image ("
+                                             + "; ".join(reasons) + ")"))

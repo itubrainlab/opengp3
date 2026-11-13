@@ -463,8 +463,16 @@ class GazeTracker:
 
     @property
     def warning(self) -> str | None:
-        """Why the data may be unreliable (e.g. the webcam fallback), else None."""
+        """Why the data is degraded or not real (webcam fallback, simulated
+        camera), else None."""
         return getattr(self._cam, "warning", None)
+
+    @property
+    def warning_title(self) -> str | None:
+        """Short form of ``warning`` (window title, labels), else None."""
+        if not self.warning:
+            return None
+        return getattr(self._cam, "warning_title", "DEGRADED DATA")
 
     @property
     def illumination(self) -> str:

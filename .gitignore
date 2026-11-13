@@ -17,3 +17,4 @@ calibration*.json
 
 # local webcam check output (contains a camera image)
 /webcam_check.*
+/camera_probe*

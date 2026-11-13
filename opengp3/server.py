@@ -393,14 +393,17 @@ class OpenGazeServer:
         if ident == "PRODUCT_ID":
             cam = tr.camera
             model = getattr(cam, "model", "GP3")
-            product = self.product if self.product != "GP3" else model.replace(" ", "")
+            product = (getattr(cam, "product_id", None)
+                       or (self.product if self.product != "GP3" else model.replace(" ", "")))
             return ack(("VALUE", product), ("BUS", getattr(cam, "bus", "USB2")),
                        ("RATE", f"{getattr(cam, 'rate', 60.0):.0f}"), *self._warning())
         if ident == "SERIAL_ID":
             return ack(("VALUE", self._serial()), *self._warning())
         if ident == "COMPANY_ID":
-            # manufacturer of the eye-tracker hardware (none for the webcam fallback)
-            return ack(("VALUE", "WEBCAM" if tr.warning else "GAZEPOINT"), *self._warning())
+            # manufacturer of the eye-tracker hardware (none for webcam / simulated)
+            return ack(("VALUE", getattr(tr.camera, "company_id",
+                                         "OPENGP3" if tr.warning else "GAZEPOINT")),
+                       *self._warning())
         if ident == "API_ID":
             return ack(("VALUE", API_VERSION), ("IMPL", f"OpenGP3 {__version__}"),
                        *self._warning())
@@ -428,8 +431,8 @@ class OpenGazeServer:
         return nack
 
     def _warning(self) -> list[tuple[str, str]]:
-        """Extra WARNING attribute when the data is degraded (webcam fallback);
-        standard clients ignore unknown attributes."""
+        """Extra WARNING attribute when the data is degraded or not real (webcam
+        fallback, simulated camera); standard clients ignore unknown attributes."""
         w = self.tracker.warning
         return [("WARNING", w)] if w else []
 

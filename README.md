@@ -138,7 +138,10 @@ PySide6) runs the earlier OpenCV windows with keyboard controls instead: tracker
     the `cv2` module, so keep their versions equal.
 - **No hardware?** `--simulate` (or `OPENGP3_SIMULATE=1`) runs everything on a simulated GP3: the
   simulated person looks at your mouse cursor and follows calibration targets by themselves. It
-  keeps its own calibration file, so your real calibration is never overwritten.
+  keeps its own calibration file, so your real calibration is never overwritten. Like the webcam
+  fallback, it is flagged everywhere as not real data: Control app banner and title, console,
+  Python `RuntimeWarning`, Open Gaze API (`PRODUCT_ID`/`COMPANY_ID` `SIMULATED` plus a `WARNING`
+  attribute) and LSL metadata and marker.
 - **Lab Streaming Layer, on by default** (`--no-lsl` turns it off; pylsl is installed with OpenGP3):
   - **`OpenGP3 Gaze`** (type `Gaze`, 60 Hz or the GP3 HD's 150 Hz, 26 float channels, named after the Open Gaze API fields):
     binocular, fixation and per-eye gaze (screen fractions), pupil size in mm, pupil positions in the

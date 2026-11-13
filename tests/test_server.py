@@ -58,6 +58,7 @@ def test_configuration_commands(server):
         assert 'STATE="1"' in h("SET", f"ENABLE_SEND_{f}", STATE=1)
 
 
+@pytest.mark.slow
 def test_streams_all_fields_and_gazepoint_demo_parsing(server):
     gt, srv, cam = server
     with OpenGazeClient(port=srv.port) as c:
@@ -83,6 +84,7 @@ def test_streams_all_fields_and_gazepoint_demo_parsing(server):
     assert float(recs[-1]["TIME"]) > float(recs[0]["TIME"])
 
 
+@pytest.mark.slow
 def test_api_calibration_headless_then_gaze(server):
     """Client-drawn calibration (CALIBRATE_SHOW=0): the server times the
     points and announces them; the simulated subject looks at each one."""
@@ -181,6 +183,7 @@ def test_gazepoint_cc0_demo_style_client(server):
     assert {"FPOGX", "CX"} <= seen
 
 
+@pytest.mark.slow
 def test_user_data_one_shot(server):
     gt, srv, cam = server
     with OpenGazeClient(port=srv.port) as c:

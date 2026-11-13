@@ -67,6 +67,7 @@ def test_source_of():
     assert sources.source_of(SimulatedCamera()) == ("simulated", 0)
 
 
+@pytest.mark.slow
 def test_switch_camera_while_tracking(fake_camera):
     gt = GazeTracker(Screen(1920, 1080), camera=fake_camera, input_monitor=False)
     with gt:
@@ -89,6 +90,7 @@ def test_switch_camera_while_tracking(fake_camera):
         assert s is not None and len(s.eyes) == 2      # tracking resumed on the new camera
 
 
+@pytest.mark.slow
 def test_gui_camera_selector(fake_camera, tmp_path, monkeypatch):
     pytest.importorskip("PySide6")
     import os

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 import queue
 import threading
 import time
@@ -182,7 +183,7 @@ class WebcamCamera:
     def __init__(self, index: int = 0, width: int = 1280, height: int = 720, fps: float = 30.0,
                  first_frame_timeout: float = 4.0):
         self.index = index
-        backend = cv2.CAP_AVFOUNDATION if os.uname().sysname == "Darwin" else cv2.CAP_ANY
+        backend = cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_ANY
         self.cap = cv2.VideoCapture(index, backend)
         if not self.cap.isOpened():
             raise WebcamUnavailable(_permission_hint(f"no webcam at index {index}"))
@@ -294,7 +295,7 @@ class WebcamCamera:
 
 
 def _permission_hint(msg: str) -> str:
-    if os.uname().sysname == "Darwin":
+    if sys.platform == "darwin":
         return (f"{msg}. On macOS, allow camera access for the app running OpenGP3 "
                 "(Terminal, your IDE, ...) in System Settings > Privacy & Security > Camera")
     return msg

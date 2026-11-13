@@ -55,3 +55,6 @@ version = { attr = "opengp3.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: end-to-end, GUI and LSL tests (seconds each); run on release, skipped on commits with -m 'not slow'",
+]

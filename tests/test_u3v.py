@@ -485,6 +485,7 @@ def test_default_leds_dark_pupil_bank_only(hd):
     assert fake.light() == 0
 
 
+@pytest.mark.slow
 def test_choose_led_lines_avoids_bright_pupil_bank(hd):
     cam, fake = hd
     fake.banks = {2: 1.0, 3: 1.0}
@@ -495,6 +496,7 @@ def test_choose_led_lines_avoids_bright_pupil_bank(hd):
     assert counts[("Line2",)] == 0 and counts[("Line2", "Line3")] == 0 and counts[("Line3",)] == 6
 
 
+@pytest.mark.slow
 def test_probe_leds_finds_both_banks_and_saves(hd):
     cam, fake = hd
     fake.banks, fake.ir_inverted = {1: 0.3, 3: 0.7}, False     # not the default wiring
@@ -710,6 +712,7 @@ def test_gp3hd_focal_length_used_by_eye_model(hd):
         assert gt.eye_model.focal_px == cam.focal_px
 
 
+@pytest.mark.slow
 def test_display_frames_are_one_type_on_gazepoint_illumination(hd_gazepoint):
     """latest_frame() (the tracker display) only shows dark-pupil frames, so it
     doesn't flicker between the cycle's bright and dark frames."""

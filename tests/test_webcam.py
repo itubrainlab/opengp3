@@ -95,6 +95,7 @@ def webcam_tracker(fake_camera, monkeypatch):
         yield gt, fake_camera
 
 
+@pytest.mark.slow
 def test_webcam_pipeline_calibrates_and_warns(webcam_tracker):
     gt, cam = webcam_tracker
     assert gt.warning == WEBCAM_WARNING
@@ -131,6 +132,7 @@ def test_no_warning_attributes_with_a_gazepoint_tracker(fake_camera):
         assert 'VALUE="GAZEPOINT"' in srv.handle(c, "GET", "COMPANY_ID", {})[0]
 
 
+@pytest.mark.slow
 def test_lsl_metadata_and_marker_warn(webcam_tracker):
     pylsl = pytest.importorskip("pylsl")
     from opengp3.lsl import LSLStreamer
@@ -151,6 +153,7 @@ def test_lsl_metadata_and_marker_warn(webcam_tracker):
         lsl.close()
 
 
+@pytest.mark.slow
 def test_gui_banner(webcam_tracker, tmp_path):
     pytest.importorskip("PySide6")
     import os

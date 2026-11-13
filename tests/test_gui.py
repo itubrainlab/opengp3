@@ -15,6 +15,9 @@ from opengp3.server import OpenGazeServer        # noqa: E402
 SCREEN = Screen(1920, 1080, width_cm=53.0, distance_cm=65.0)
 
 
+pytestmark = pytest.mark.slow   # GUI / LSL: run on release
+
+
 @pytest.fixture
 def app():
     from PySide6.QtWidgets import QApplication

@@ -1,5 +1,6 @@
 """The simulated GP3: detectable images, and a full calibration in which the
 simulated person follows the targets by themselves."""
+import pytest
 import time
 
 from opengp3 import GazeTracker, Screen, detect_eyes
@@ -12,6 +13,7 @@ def test_frames_are_detectable():
     assert len(eyes) == 2 and all(e.n_glints == 2 for e in eyes)
 
 
+@pytest.mark.slow
 def test_calibration_follows_targets_then_tracks_gaze():
     cam = SimulatedCamera(head_motion=False, blink_interval_s=1e9)
     screen = Screen(1920, 1080, width_cm=47.0)            # 21": no 22" restriction
@@ -48,6 +50,7 @@ def test_simulated_device_is_flagged_everywhere(monkeypatch):
         assert "WARNING=" in srv.handle(c, "GET", "API_ID", {})[0]
 
 
+@pytest.mark.slow
 def test_simulated_lsl_metadata_and_marker():
     import pytest
     pylsl = pytest.importorskip("pylsl")

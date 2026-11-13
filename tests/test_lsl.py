@@ -9,6 +9,9 @@ from opengp3 import GazeTracker, Screen
 from opengp3.lsl import CHANNELS, LSLStreamer
 
 
+pytestmark = pytest.mark.slow   # GUI / LSL: run on release
+
+
 def _resolve(name, timeout=5.0):
     t_end = time.time() + timeout
     while time.time() < t_end:

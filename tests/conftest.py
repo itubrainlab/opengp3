@@ -85,7 +85,26 @@ class FakeCamera:
         return synth_eye_image([(250 + dx, 240 + dy, dx, dy), (517 + dx, 238 + dy, dx, dy)],
                                seed=self._seq % 7)
 
+    @property
+    def realtime(self):
+        return getattr(self, "_realtime", True)
+
+    @realtime.setter
+    def realtime(self, on):
+        """False: frames as fast as consumed, stamped with a simulated time
+        advancing exactly 1/fps per frame (``clock()``)."""
+        if not on and self.realtime:
+            self._vt = time.time()
+        self._realtime = on
+
+    def clock(self):
+        return time.time() if self.realtime else self._vt
+
     def grab(self, timeout_s=2.0, latest=False):
+        if not self.realtime:
+            self._vt += 1 / self.fps
+            self._seq += 1
+            return self._seq, self._vt, self.frame()
         now = time.time()
         if self._next > now:
             time.sleep(self._next - now)

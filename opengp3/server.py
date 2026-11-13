@@ -36,6 +36,34 @@ ALL_NETWORKS = "0.0.0.0"           # default: reachable from other computers (mu
 LOCAL_ONLY = ("127.0.0.1", "localhost", "::1")
 
 
+_HOST_ADDRS: list[str] | None = None
+
+
+def _hostname_addresses(timeout: float = 0.5) -> list[str]:
+    """Addresses the computer's own hostname resolves to (other networks).
+    The lookup can hang for tens of seconds where the hostname isn't in DNS
+    (common on Macs), so it runs in a background thread with a time limit
+    and its result is cached."""
+    global _HOST_ADDRS
+    if _HOST_ADDRS is not None:
+        return _HOST_ADDRS
+    result: list[str] = []
+
+    def lookup():
+        try:
+            result.extend(info[4][0] for info in
+                          socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET))
+        except OSError:
+            pass
+    t = threading.Thread(target=lookup, name="opengp3-hostname", daemon=True)
+    t.start()
+    t.join(timeout)
+    if not t.is_alive():       # finished in time: remember it
+        _HOST_ADDRS = list(result)
+        return _HOST_ADDRS
+    return []                  # still waiting: skip (the default route address remains)
+
+
 def local_ipv4_addresses() -> list[str]:
     """This computer's IPv4 addresses on its networks (no loopback): what
     clients on other machines connect to."""
@@ -46,11 +74,7 @@ def local_ipv4_addresses() -> list[str]:
             found.append(s.getsockname()[0])
     except OSError:
         pass
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            found.append(info[4][0])
-    except OSError:
-        pass
+    found += _hostname_addresses()
     out = []
     for a in found:
         if a and not a.startswith("127.") and a not in out:

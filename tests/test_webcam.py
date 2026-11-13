@@ -86,6 +86,7 @@ class _Detector:
 
 @pytest.fixture
 def webcam_tracker(fake_camera, monkeypatch):
+    fake_camera.realtime = False   # simulated time: fixed frames per point on any machine
     for attr in ("illumination", "model", "warning", "warning_title", "product_id",
                  "company_id", "description"):  # a webcam's self-description
         setattr(fake_camera, attr, getattr(webcam.WebcamCamera, attr))
@@ -103,7 +104,7 @@ def test_webcam_pipeline_calibrates_and_warns(webcam_tracker):
     def follow(ev, n, fx, fy):
         if ev == "start_pt":
             cam.look = (fx, fy)
-    run = gt.start_calibration(9, delay=0.3, timeout=0.8, min_samples=5, listener=follow)
+    run = gt.start_calibration(9, delay=0.3, timeout=0.4, min_samples=5, listener=follow)
     while not run.tick(None):
         time.sleep(0.005)
     cal = gt.finish_calibration(run)

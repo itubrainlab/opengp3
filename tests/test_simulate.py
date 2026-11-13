@@ -16,10 +16,11 @@ def test_frames_are_detectable():
 @pytest.mark.slow
 def test_calibration_follows_targets_then_tracks_gaze():
     cam = SimulatedCamera(head_motion=False, blink_interval_s=1e9)
+    cam.realtime = False   # simulated time: fixed frames per point on any machine
     screen = Screen(1920, 1080, width_cm=47.0)            # 21": no 22" restriction
     with GazeTracker(screen, camera=cam, input_monitor=False) as gt:
         cam.attach(gt)
-        run = gt.start_calibration(9, delay=0.5, timeout=0.8, min_samples=5)
+        run = gt.start_calibration(9, delay=0.3, timeout=0.4, min_samples=5)
         while not run.tick(None):
             time.sleep(0.005)
         cal = gt.finish_calibration(run)

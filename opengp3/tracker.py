@@ -162,13 +162,17 @@ class CalibrationRun:
             except queue.Empty:
                 return
 
+    def _now(self) -> float:
+        """The tracker's clock (wall clock, or a simulated camera's frame time)."""
+        return getattr(self.tracker, "clock", time.time)()
+
     def start(self):
-        self._advance(time.time())
+        self._advance(self._now())
 
     def tick(self, win: StimulusWindow | None = None) -> bool:
         if self._phase == "wait":
             self.start()
-        now = time.time()
+        now = self._now()
         if not self.done:
             el = now - self._t_point
             if el >= self.delay + self.timeout:
@@ -316,6 +320,9 @@ class GazeTracker:
         self._latest_image: np.ndarray | None = None
         self._image_sample: GazeSample | None = None
         self._t0 = time.time()
+        #: time source for frames and calibration timing: the wall clock, or a
+        #: simulated camera's own clock (tests run calibrations faster than real time)
+        self.clock = time.time
         self.image_size = (752, 480)
         self.dropped_frames = 0
         self.fps = 0.0
@@ -353,7 +360,8 @@ class GazeTracker:
         self.eye_model.focal_px = getattr(self._cam, "focal_px", self.eye_model.focal_px)
         self._cam.set_leds(True)
         self._cam.start_stream()
-        self._t0 = time.time()
+        self.clock = getattr(self._cam, "clock", None) or time.time
+        self._t0 = self.clock()
         self._running.set()
         self._thread = threading.Thread(target=self._process, name="opengp3", daemon=True)
         self._thread.start()
@@ -492,14 +500,14 @@ class GazeTracker:
         pupil_gain = PupilGainControl(self._cam) if self.illumination == "bright-dark" else None
         last_seq = 0
         gain = _GainSweep(self)
-        fps_t, fps_n = time.time(), 0
+        fps_t, fps_n = self.clock(), 0
         while self._running.is_set():
             try:
                 seq, t, img = self._cam.grab(timeout_s=1.0)
             except TimeoutError as e:
                 self.error = e
                 continue
-            if time.time() - t > 0.15:  # fell behind: skip to the newest frame
+            if self.clock() - t > 0.15:  # fell behind: skip to the newest frame
                 seq, t, img = self._cam.grab(latest=True)
             if last_seq and seq > last_seq + 1:
                 self.dropped_frames += seq - last_seq - 1

@@ -136,7 +136,27 @@ class SimulatedCamera:
     def info(self) -> dict:
         return {"usb": "simulated GP3", "serial": self.serial, "formats": [0, 7]}
 
+    #: False: frames are produced as fast as they are consumed, stamped with a
+    #: simulated time advancing exactly 1/rate per frame (``clock()``), so a
+    #: calibration takes a fixed number of frames on any machine (tests)
+    @property
+    def realtime(self) -> bool:
+        return getattr(self, "_realtime", True)
+
+    @realtime.setter
+    def realtime(self, on: bool):
+        if not on and self.realtime:
+            self._vt = time.time()
+        self._realtime = on
+
+    def clock(self) -> float:
+        return time.time() if self.realtime else self._vt
+
     def grab(self, timeout_s: float = 2.0, latest: bool = False):
+        if not self.realtime:
+            self._vt += 1.0 / self.rate
+            self._seq += 1
+            return self._seq, self._vt, self.frame(self._vt)
         now = time.time()
         if self._next > now:
             time.sleep(self._next - now)

@@ -89,7 +89,8 @@ def test_api_calibration_headless_then_gaze(server):
     """Client-drawn calibration (CALIBRATE_SHOW=0): the server times the
     points and announces them; the simulated subject looks at each one."""
     gt, srv, cam = server
-    srv.cal_delay, srv.cal_timeout = 0.3, 1.0   # generous: CI runners are slow
+    cam.realtime = False   # simulated time: fixed frames per point on any machine
+    srv.cal_delay, srv.cal_timeout = 0.3, 0.4
 
     def listener(event, n, fx, fy):  # the subject follows the announced point
         srv.calibration_listener(event, n, fx, fy)
@@ -238,3 +239,20 @@ def test_remote_access_default_and_switching(fake_camera):
                     assert c2.get("CAMERA_SIZE")["WIDTH"] == "752"
         finally:
             srv.stop()
+
+
+def test_address_listing_does_not_hang_on_slow_hostname_lookup(monkeypatch):
+    """Where the hostname doesn't resolve (common on Macs, e.g. CI runners),
+    getaddrinfo can block for tens of seconds: listing addresses must not."""
+    import time as _time
+    import opengp3.server as server
+    monkeypatch.setattr(server, "_HOST_ADDRS", None)
+
+    def slow(*a, **k):
+        _time.sleep(5)
+        return []
+    monkeypatch.setattr(server.socket, "getaddrinfo", slow)
+    t0 = _time.perf_counter()
+    server.local_ipv4_addresses()
+    assert _time.perf_counter() - t0 < 1.5
+    monkeypatch.setattr(server, "_HOST_ADDRS", None)

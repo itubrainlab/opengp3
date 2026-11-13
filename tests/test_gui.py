@@ -70,7 +70,8 @@ def test_calibrate_from_the_window_headless(app, window):
     targets; the results table and summary appear."""
     w, gt, srv, cam = window
     srv.cal_show = False            # headless: the server times the points, no stimulus window
-    srv.cal_delay, srv.cal_timeout = 0.3, 2.0   # generous: CI runners are slow
+    cam.realtime = False   # simulated time: fixed frames per point on any machine
+    srv.cal_delay, srv.cal_timeout = 0.3, 0.4
     w.cmb_points.setCurrentIndex(w.cmb_points.findData(5))
     orig = srv.calibration_listener
 

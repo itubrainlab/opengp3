@@ -54,6 +54,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+          cache: pip                          # reuse downloaded PySide6/OpenCV/... wheels
+          cache-dependency-path: pyproject.toml
       - name: System libraries (OpenCV needs libGL, Qt's offscreen platform EGL/xkb/fontconfig)
         if: runner.os == 'Linux'
         run: >-

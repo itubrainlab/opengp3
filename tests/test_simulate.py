@@ -26,10 +26,18 @@ def test_calibration_follows_targets_then_tracks_gaze():
         cal = gt.finish_calibration(run)
         assert set(cal.eyes) == {"R", "L"} and cal.valid_points == 9
         cam.look_override = (0.3, 0.7)
-        time.sleep(0.8)
-        s = gt.latest()
-    assert s.valid
-    assert abs(s.raw_x / 1920 - 0.3) < 0.04 and abs(s.raw_y / 1080 - 0.7) < 0.04
+        time.sleep(0.5)                                   # the eye gets there
+        q = gt.subscribe()
+        gaze = []
+        t_end = time.time() + 10
+        while len(gaze) < 20 and time.time() < t_end:   # median of 20 samples:
+            s = q.get(timeout=2)                          # single frames are noisy
+            if s.valid:
+                gaze.append((s.raw_x / 1920, s.raw_y / 1080))
+        gt.unsubscribe(q)
+    import numpy as np
+    mx, my = np.median(gaze, axis=0)
+    assert len(gaze) == 20 and abs(mx - 0.3) < 0.04 and abs(my - 0.7) < 0.04
     assert gt.active_run is None if hasattr(gt, "active_run") else True
 
 

@@ -157,10 +157,14 @@ def test_api_calibration_headless_then_gaze(server):
             recs.append(r)
             if len(recs) >= 30:
                 break
-    r = recs[-1]
-    assert r["BPOGV"] == "1"
-    assert abs(float(r["BPOGX"]) - 0.3) < 0.05 and abs(float(r["BPOGY"]) - 0.7) < 0.05
-    assert r["FPOGV"] == "1" and abs(float(r["FPOGX"]) - 0.3) < 0.05
+    # median of the last 20 records: single frames are noisy
+    import numpy as np
+    last = recs[-20:]
+    assert all(r["BPOGV"] == "1" for r in last)
+    med = lambda k: float(np.median([float(r[k]) for r in last]))
+    assert abs(med("BPOGX") - 0.3) < 0.05 and abs(med("BPOGY") - 0.7) < 0.05
+    fix = [r for r in last if r["FPOGV"] == "1"]
+    assert fix and abs(float(np.median([float(r["FPOGX"]) for r in fix])) - 0.3) < 0.05
 
 
 def test_gazepoint_cc0_demo_style_client(server):

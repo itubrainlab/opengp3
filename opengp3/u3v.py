@@ -26,7 +26,6 @@ override it.
 """
 from __future__ import annotations
 
-import ctypes
 import io
 import json
 import os
@@ -40,8 +39,8 @@ import numpy as np
 import usb.core
 import usb.util
 
-from .camera import FrameStream, GP3Error, _libusb_backend, prepare_device, VID, is_u3v, \
-    GP3NotFoundError, _open_with_setup
+from .camera import AsyncStream, FrameStream, GP3Error, _libusb_backend, prepare_device, \
+    VID, is_u3v, GP3NotFoundError, _open_with_setup
 from .genicam import GenICamError, NodeMap
 
 # --- GenCP -------------------------------------------------------------------
@@ -193,138 +192,6 @@ class UsbTransport:
             except usb.core.USBError:
                 pass
         usb.util.dispose_resources(self.dev)
-
-
-class _Timeval(ctypes.Structure):
-    _fields_ = [("tv_sec", ctypes.c_long), ("tv_usec", ctypes.c_long)]
-
-
-class AsyncStream:
-    """Keeps ``depth`` frames of stream transfers queued on the bulk IN
-    endpoint, using libusb's asynchronous API through ctypes.
-
-    With one synchronous read at a time the endpoint sits idle between
-    transfers and the camera's buffer overflows: on a GP3 HD full frames
-    (1280x1024) then arrive at 74.6 Hz instead of 150 Hz. A frame is a fixed
-    sequence of transfers (leader, payload, final payload, trailer), so the
-    queue is that sequence repeated; transfers complete in submission order
-    and each is resubmitted as soon as its data has been taken.
-
-    ``read(size)`` returns the next transfer's data and must be called with
-    the sizes in the same order (a frame's sequence, repeated)."""
-
-    LIBUSB_TRANSFER_TYPE_BULK = 2
-    STATUS = {0: "completed", 1: "error", 2: "timed out", 3: "cancelled", 4: "stall",
-              5: "no device", 6: "overflow"}
-
-    def __init__(self, dev, endpoint: int, sizes: list[int], depth: int = 4):
-        import usb.backend.libusb1 as lb
-        backend = dev._ctx.backend
-        handle = dev._ctx.handle
-        if handle is None or not hasattr(backend, "lib"):
-            raise U3VError("asynchronous transfers need pyusb's libusb1 backend")
-        self.lib, self.ctx = backend.lib, backend.ctx
-        lib = self.lib
-        lib.libusb_cancel_transfer.argtypes = [ctypes.POINTER(lb._libusb_transfer)]
-        lib.libusb_cancel_transfer.restype = ctypes.c_int
-        lib.libusb_handle_events_timeout_completed.argtypes = [
-            ctypes.c_void_p, ctypes.POINTER(_Timeval), ctypes.POINTER(ctypes.c_int)]
-        lib.libusb_handle_events_timeout_completed.restype = ctypes.c_int
-        self.sizes = list(sizes) * depth
-        self.done = [True] * len(self.sizes)
-        self.inflight: set[int] = set()
-        self.pos = 0
-        self.bufs = [ctypes.create_string_buffer(s) for s in self.sizes]
-        self._cb = lb._libusb_transfer_cb_fn_p(self._callback)  # kept alive with self
-        self._index: dict[int, int] = {}
-        self.xfers = []
-        for i, size in enumerate(self.sizes):
-            t = lib.libusb_alloc_transfer(0)
-            if not t:
-                self._free()
-                raise MemoryError("libusb_alloc_transfer failed")
-            c = t.contents
-            c.dev_handle = handle.handle
-            c.flags = 0
-            c.endpoint = endpoint
-            c.type = self.LIBUSB_TRANSFER_TYPE_BULK
-            c.timeout = 0          # no libusb timeout: read() has its own
-            c.length = size
-            c.buffer = ctypes.cast(self.bufs[i], ctypes.c_void_p)
-            c.callback = self._cb
-            c.num_iso_packets = 0
-            self._index[ctypes.addressof(c)] = i
-            self.xfers.append(t)
-
-    def _callback(self, transfer):
-        # runs in whichever thread handles libusb events (may be a control
-        # transfer's thread): only flag the completion
-        self.done[self._index[ctypes.addressof(transfer.contents)]] = True
-
-    def _submit(self, i: int):
-        self.done[i] = False
-        r = self.lib.libusb_submit_transfer(self.xfers[i])
-        if r:
-            self.done[i] = True
-            raise usb.core.USBError(f"libusb_submit_transfer failed ({r})", r)
-        self.inflight.add(i)
-
-    def submit_all(self):
-        self.pos = 0
-        for i in range(len(self.xfers)):
-            self._submit(i)
-
-    def _handle_events(self, seconds: float = 0.05):
-        tv = _Timeval(0, int(seconds * 1e6))
-        self.lib.libusb_handle_events_timeout_completed(self.ctx, ctypes.byref(tv), None)
-
-    def read(self, size: int, timeout_ms: int, abort=None, into=None):
-        """Next transfer's data as bytes, or, with ``into`` (a writable numpy
-        uint8 array of at least ``size``), copied there and its length
-        returned."""
-        i = self.pos
-        if self.sizes[i] != size:
-            raise U3VError(f"stream read of {size} bytes at queue position {i} "
-                           f"(expected {self.sizes[i]})")
-        deadline = time.monotonic() + timeout_ms / 1000
-        while not self.done[i]:
-            if abort is not None and abort():
-                raise usb.core.USBError("stream stopped")
-            if time.monotonic() > deadline:
-                raise usb.core.USBError("Operation timed out", None, 110)
-            self._handle_events()
-        c = self.xfers[i].contents
-        self.inflight.discard(i)
-        if c.status != 0:
-            raise usb.core.USBError(f"stream transfer {self.STATUS.get(c.status, c.status)}")
-        n = c.actual_length
-        if into is not None:
-            ctypes.memmove(into.ctypes.data, self.bufs[i], n)
-            data = n
-        else:
-            data = ctypes.string_at(self.bufs[i], n)
-        self.pos = (i + 1) % len(self.xfers)
-        self._submit(i)
-        return data
-
-    def cancel(self, timeout_s: float = 1.0):
-        """Cancel all queued transfers and wait for them to finish."""
-        for i in list(self.inflight):
-            self.lib.libusb_cancel_transfer(self.xfers[i])
-        t_end = time.monotonic() + timeout_s
-        while any(not self.done[i] for i in self.inflight) and time.monotonic() < t_end:
-            self._handle_events(0.02)
-        self.inflight = {i for i in self.inflight if not self.done[i]}
-
-    def _free(self):
-        for t in self.xfers:
-            self.lib.libusb_free_transfer(t)
-        self.xfers = []
-
-    def close(self):
-        self.cancel()
-        if not self.inflight:  # never free a transfer libusb still owns
-            self._free()
 
 
 class GenCP:
@@ -908,10 +775,6 @@ class GP3HDCamera(FrameStream):
             self._thread.join(timeout=2)
             self._thread = None
         self.stop()
-
-    def _stopping(self) -> bool:
-        evt = getattr(self, "_stop_evt", None)
-        return evt is not None and evt.is_set()
 
     def _chunk(self, size: int, timeout_ms: int) -> bytes:
         if self._async is not None:

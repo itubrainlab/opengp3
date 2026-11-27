@@ -340,7 +340,7 @@ mapping as libdc1394's USB backend:
 | What | USB transfer |
 |---|---|
 | Register read / write | control, `bmRequestType=0xC0` / `0x40`, `bRequest=0x7F`, `wValue/wIndex` = address low/high 16 bits, little-endian quadlets |
-| Image data | bulk IN `0x81`. A continuous stream without frame markers; frames stay aligned because each read is exactly one frame after `ISO_EN`. A reader thread keeps a transfer pending, otherwise the camera drops frames. |
+| Image data | bulk IN `0x81`. A continuous stream without frame markers; frames stay aligned because each read is exactly one frame after `ISO_EN`. Several reads stay queued on the endpoint (libusb asynchronous API), so the camera never waits for the host; if it ever does, it re-sends part of a frame and every following image would come out doubled - the driver detects that (a sustained vertical seam: the scene rolled horizontally) and realigns the stream automatically. |
 | IR illuminators | Point Grey **strobe 2, active-low** (found empirically) |
 
 The sensor is 752×480, which is also the maximum resolution. The standard 640×480 mode is a centre crop,

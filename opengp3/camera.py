@@ -16,6 +16,7 @@ So it can be driven from macOS user space via libusb, with no kernel driver.
 """
 from __future__ import annotations
 
+import ctypes
 import os
 import queue
 import sys
@@ -363,6 +364,145 @@ def _bit(value: int, n: int) -> bool:
     return bool(value & (0x8000_0000 >> n))
 
 
+class _Timeval(ctypes.Structure):
+    _fields_ = [("tv_sec", ctypes.c_long), ("tv_usec", ctypes.c_long)]
+
+
+class AsyncStream:
+    """Keeps ``depth`` stream transfers queued on the bulk IN endpoint, using
+    libusb's asynchronous API through ctypes.
+
+    With one synchronous read at a time the endpoint sits idle between
+    transfers, and the camera's buffer overflows: on a GP3 HD full frames
+    (1280x1024) then arrive at 74.6 Hz instead of 150 Hz. On the GP3 the same
+    idle time is worse: the camera briefly re-sends part of a frame, and since
+    that stream has no frame markers, every following frame is then read at a
+    wrong byte offset - the image looks doubled and eye detection fails.
+    Queuing several transfers keeps a read pending whatever Python's timing
+    does (GIL pauses, a busy detection thread), so the camera never waits.
+
+    A frame is a fixed sequence of transfers (GP3 HD: leader, payload, final
+    payload, trailer; GP3: the whole frame), so the queue is that sequence
+    repeated; transfers complete in submission order and each is resubmitted
+    as soon as its data has been taken.
+
+    ``read(size)`` returns the next transfer's data and must be called with
+    the sizes in the same order (a frame's sequence, repeated)."""
+
+    LIBUSB_TRANSFER_TYPE_BULK = 2
+    STATUS = {0: "completed", 1: "error", 2: "timed out", 3: "cancelled", 4: "stall",
+              5: "no device", 6: "overflow"}
+
+    def __init__(self, dev, endpoint: int, sizes: list[int], depth: int = 4):
+        import usb.backend.libusb1 as lb
+        backend = dev._ctx.backend
+        handle = dev._ctx.handle
+        if handle is None or not hasattr(backend, "lib"):
+            raise GP3Error("asynchronous transfers need pyusb's libusb1 backend")
+        self.lib, self.ctx = backend.lib, backend.ctx
+        lib = self.lib
+        lib.libusb_cancel_transfer.argtypes = [ctypes.POINTER(lb._libusb_transfer)]
+        lib.libusb_cancel_transfer.restype = ctypes.c_int
+        lib.libusb_handle_events_timeout_completed.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(_Timeval), ctypes.POINTER(ctypes.c_int)]
+        lib.libusb_handle_events_timeout_completed.restype = ctypes.c_int
+        self.sizes = list(sizes) * depth
+        self.done = [True] * len(self.sizes)
+        self.inflight: set[int] = set()
+        self.pos = 0
+        self.bufs = [ctypes.create_string_buffer(s) for s in self.sizes]
+        self._cb = lb._libusb_transfer_cb_fn_p(self._callback)  # kept alive with self
+        self._index: dict[int, int] = {}
+        self.xfers = []
+        for i, size in enumerate(self.sizes):
+            t = lib.libusb_alloc_transfer(0)
+            if not t:
+                self._free()
+                raise MemoryError("libusb_alloc_transfer failed")
+            c = t.contents
+            c.dev_handle = handle.handle
+            c.flags = 0
+            c.endpoint = endpoint
+            c.type = self.LIBUSB_TRANSFER_TYPE_BULK
+            c.timeout = 0          # no libusb timeout: read() has its own
+            c.length = size
+            c.buffer = ctypes.cast(self.bufs[i], ctypes.c_void_p)
+            c.callback = self._cb
+            c.num_iso_packets = 0
+            self._index[ctypes.addressof(c)] = i
+            self.xfers.append(t)
+
+    def _callback(self, transfer):
+        # runs in whichever thread handles libusb events (may be a control
+        # transfer's thread): only flag the completion
+        self.done[self._index[ctypes.addressof(transfer.contents)]] = True
+
+    def _submit(self, i: int):
+        self.done[i] = False
+        r = self.lib.libusb_submit_transfer(self.xfers[i])
+        if r:
+            self.done[i] = True
+            raise usb.core.USBError(f"libusb_submit_transfer failed ({r})", r)
+        self.inflight.add(i)
+
+    def submit_all(self):
+        self.pos = 0
+        for i in range(len(self.xfers)):
+            self._submit(i)
+
+    def _handle_events(self, seconds: float = 0.05):
+        tv = _Timeval(0, int(seconds * 1e6))
+        self.lib.libusb_handle_events_timeout_completed(self.ctx, ctypes.byref(tv), None)
+
+    def read(self, size: int, timeout_ms: int, abort=None, into=None):
+        """Next transfer's data as bytes, or, with ``into`` (a writable numpy
+        uint8 array of at least ``size``), copied there and its length
+        returned."""
+        i = self.pos
+        if self.sizes[i] != size:
+            raise GP3Error(f"stream read of {size} bytes at queue position {i} "
+                           f"(expected {self.sizes[i]})")
+        deadline = time.monotonic() + timeout_ms / 1000
+        while not self.done[i]:
+            if abort is not None and abort():
+                raise usb.core.USBError("stream stopped")
+            if time.monotonic() > deadline:
+                raise usb.core.USBError("Operation timed out", None, 110)
+            self._handle_events()
+        c = self.xfers[i].contents
+        self.inflight.discard(i)
+        if c.status != 0:
+            raise usb.core.USBError(f"stream transfer {self.STATUS.get(c.status, c.status)}")
+        n = c.actual_length
+        if into is not None:
+            ctypes.memmove(into.ctypes.data, self.bufs[i], n)
+            data = n
+        else:
+            data = ctypes.string_at(self.bufs[i], n)
+        self.pos = (i + 1) % len(self.xfers)
+        self._submit(i)
+        return data
+
+    def cancel(self, timeout_s: float = 1.0):
+        """Cancel all queued transfers and wait for them to finish."""
+        for i in list(self.inflight):
+            self.lib.libusb_cancel_transfer(self.xfers[i])
+        t_end = time.monotonic() + timeout_s
+        while any(not self.done[i] for i in self.inflight) and time.monotonic() < t_end:
+            self._handle_events(0.02)
+        self.inflight = {i for i in self.inflight if not self.done[i]}
+
+    def _free(self):
+        for t in self.xfers:
+            self.lib.libusb_free_transfer(t)
+        self.xfers = []
+
+    def close(self):
+        self.cancel()
+        if not self.inflight:  # never free a transfer libusb still owns
+            self._free()
+
+
 class FrameStream:
     """Threaded frame stream shared by the GP3 and GP3 HD drivers.
 
@@ -373,6 +513,10 @@ class FrameStream:
 
     #: nominal frame rate (Hz)
     rate: float = 60.0
+
+    def _stopping(self) -> bool:
+        evt = getattr(self, "_stop_evt", None)
+        return evt is not None and evt.is_set()
 
     def _reader(self):
         while not self._stop_evt.is_set():
@@ -457,12 +601,40 @@ class GP3Camera(FrameStream):
     model = "GP3"
     bus = "USB2"
     rate = 60.0
+    #: queue this many frames' worth of stream transfers through libusb's
+    #: asynchronous API, so a read is always pending on the endpoint (Python
+    #: timing can't starve the camera). False forces one synchronous read at
+    #: a time.
+    use_async = True
+    async_depth = 4
+    #: a frame whose strongest vertical seam is this many times stronger than
+    #: the frame's median column difference may be a "doubled" image: the byte
+    #: stream has slipped against frame boundaries. Measured on hardware:
+    #: aligned frames stay below ~7, a slipped frame sits at 15-45. A flagged
+    #: frame is only acted on when it is also a horizontal roll of the recent
+    #: scene (its column profile, rolled by the seam offset, matches the last
+    #: clean frame's): a static scene *edge* also flags, but never matches.
+    SEAM_STRENGTH = 8.0
+    #: absolute profile difference (grey levels) below which a rolled frame
+    #: counts as a match (real slips measure ~4-5, scene changes ~90+)
+    SEAM_PROFILE_DIFF = 6.0
+    #: consecutive unverified flagged frames before treating them as scene
+    #: content and re-arming (a slipped stream is confirmed within 2 frames;
+    #: single glitch frames, which the camera compensates itself, are ignored)
+    SEAM_FRAMES = 4
+    #: minimum time between realign attempts
+    REALIGN_INTERVAL_S = 5.0
 
     def __init__(self, dev: usb.core.Device):
         self.dev = dev
         self.cmd_base = DEFAULT_CMD_BASE
         self.width, self.height, self.bpp = 640, 480, 1
         self._claimed = False
+        self._async: AsyncStream | None = None
+        self._seam_streak = 0
+        self._seam_seen = False
+        self._seam_ref: np.ndarray | None = None
+        self._t_realign = 0.0
 
     # ---------------------------------------------------------------- setup
     @classmethod
@@ -656,16 +828,51 @@ class GP3Camera(FrameStream):
             usb.util.claim_interface(self.dev, 0)
             self._claimed = True
         self.write(CAMERA_POWER, 0x8000_0000)
-        # The bulk stream has no frame markers: frames are aligned only
-        # because the first byte after ISO_EN is the start of a frame. So
-        # stop, drain any stale bytes, then enable and always read exactly
-        # one frame per grab().
+        self.realign()
+
+    def realign(self):
+        """Restart the video stream so the bulk data lines up with frame
+        boundaries again.
+
+        The stream has no frame markers: frames stay aligned only because
+        each read starts exactly at a frame boundary. When the camera is left
+        without a pending read it re-sends part of a frame, and from then on
+        every frame is read at a byte offset - the image looks doubled ("the
+        camera sees double") and eye detection fails. Stopping ISO, draining
+        the pipe and re-enabling ISO re-aligns to the next frame boundary.
+        """
         self.stop()
         self._drain()
+        self._async = None
+        if self.use_async:
+            a = None
+            try:
+                a = AsyncStream(self.dev, BULK_EP, [self.frame_bytes], self.async_depth)
+                a.submit_all()  # transfers wait before the first frame starts
+                self._async = a
+            except Exception:
+                if a is not None:  # half-submitted transfers would leak
+                    try:
+                        a.close()
+                    except Exception:
+                        pass
+                self._async = None  # one synchronous read at a time instead
         self.write(ISO_EN, 0x8000_0000)
+        self._seam_streak, self._seam_seen, self._seam_ref = 0, False, None
 
     def stop(self):
         self.write(ISO_EN, 0)
+        if self._async is not None:
+            self._async.close()
+            self._async = None
+
+    def stop_stream(self):
+        # the reader thread must leave the queued transfers before they are freed
+        if getattr(self, "_thread", None):
+            self._stop_evt.set()
+            self._thread.join(timeout=2)
+            self._thread = None
+        self.stop()
 
     def _drain(self, max_s: float = 1.0):
         """Discard leftover bytes in the endpoint (stream must be stopped)."""
@@ -678,10 +885,72 @@ class GP3Camera(FrameStream):
 
     def _read_frame(self, timeout_ms: int = 1000) -> np.ndarray:
         n = self.frame_bytes
-        buf = bytearray()
-        while len(buf) < n:
-            buf += self.dev.read(BULK_EP, n - len(buf), timeout=timeout_ms)
-        return np.frombuffer(bytes(buf), np.uint8).reshape(self.height, self.width)
+        try:
+            if self._async is not None:
+                data = self._async.read(n, timeout_ms, abort=self._stopping)
+            else:
+                buf = bytearray()
+                while len(buf) < n:
+                    buf += self.dev.read(BULK_EP, n - len(buf), timeout=timeout_ms)
+                data = bytes(buf)
+        except usb.core.USBError:
+            # a failed transfer leaves the stream at an unknown byte position;
+            # without frame markers the only recovery is to restart at a frame
+            # boundary (the reader thread retries after the exception)
+            if not self._stopping():
+                try:
+                    self.realign()
+                except (usb.core.USBError, GP3Error):
+                    pass
+            raise
+        img = np.frombuffer(data, np.uint8).reshape(self.height, self.width)
+        self._check_desync(img)
+        return img
+
+    def _check_desync(self, img: np.ndarray):
+        """Realign the stream when frames come out doubled (see ``realign``).
+
+        A slipped frame is the scene rolled horizontally: every row shows a
+        fixed seam where the wrap-around lands. Its strength - the largest
+        per-column difference over the frame's median - separates slipped
+        frames (15-45, measured) from aligned ones (below ~7). A strong seam
+        alone is not enough: static scene *edges* also flag, so a flagged
+        frame must additionally be a roll of the recent scene - its column
+        profile, shifted by the seam offset, has to match the last clean
+        frame's (real slips measure ~4-5 grey levels of difference, scene
+        changes never match). The profile is immune to the byte slip's
+        vertical component. Only a *persistent, verified* slip is acted on:
+        single glitch frames (the camera compensates them itself) are
+        ignored."""
+        sub = img[::4].astype(np.int16)          # every 4th row: 4x cheaper
+        d = np.abs(sub[:, 1:] - sub[:, :-1]).mean(0)
+        if sub.mean() < 8 or float(np.median(d)) < 1.0:  # dark / flat image
+            self._seam_streak, self._seam_seen, self._seam_ref = 0, False, None
+            return
+        strength = float(d.max()) / max(float(np.median(d)), 1.0)
+        if strength <= self.SEAM_STRENGTH:        # aligned: refresh the reference
+            self._seam_streak, self._seam_seen = 0, False
+            self._seam_ref = sub.mean(0)
+            return
+        self._seam_streak += 1
+        if self._seam_streak > self.SEAM_FRAMES:  # never verified: scene content
+            self._seam_streak, self._seam_seen, self._seam_ref = 0, False, None
+            return
+        ref, p, c = self._seam_ref, sub.mean(0), int(d.argmax())
+        if ref is not None:
+            straight = float(np.abs(p - ref).mean())
+            rolled = min(float(np.abs(np.roll(p, s) - ref).mean())
+                         for s in (c, -c, c - 1, 1 - c))
+            if rolled < min(0.4 * straight, self.SEAM_PROFILE_DIFF):
+                self._seam_seen = True             # the scene, rolled: a real slip
+        if self._seam_seen and self._seam_streak >= 2 \
+                and time.monotonic() - self._t_realign > self.REALIGN_INTERVAL_S:
+            self._t_realign = time.monotonic()
+            self._seam_streak, self._seam_seen = 0, False
+            try:
+                self.realign()
+            except (usb.core.USBError, GP3Error):
+                pass  # the reader's error handling retries
 
     def info(self) -> dict:
         d = {
